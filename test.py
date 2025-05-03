@@ -6,21 +6,58 @@ import time
 # 環境の作成
 env = gym.make('CartPole-v1')
 
-bins_global = (3, 3, 6, 8)  # 離散化のビン数
+class BinsConfig:
+    __cart_pos : float
+    __cart_vel : float
+    __pole_angle : float
+    __pole_vel : float
+
+    def __init__(self, cart_pos=16, cart_vel=16, pole_angle=32, pole_vel=32):
+        self.__cart_pos = cart_pos
+        self.__cart_vel = cart_vel
+        self.__pole_angle = pole_angle
+        self.__pole_vel = pole_vel
+    
+    @property
+    def cart_pos(self):
+        return self.__cart_pos
+    
+    @property
+    def cart_vel(self):
+        return self.__cart_vel
+    
+    @property
+    def pole_angle(self):
+        return self.__pole_angle
+    
+    @property
+    def pole_vel(self):
+        return self.__pole_vel
+
+    def get_bins(self):
+        return (self.__cart_pos, self.__cart_vel, self.__pole_angle, self.__pole_vel)
+    
+    def bins_size(self):
+        return len(self.get_bins())
+
+# カート位置、カート速度、ポール角度、ポール角速度のビン数 （ビン = 連続値を離散値に分割するときに利用する数の事）
+bins_global = BinsConfig()
+
+# カートに与えられる入力は、左に移動、右に移動の2つだけ
 
 # 状態空間を離散化する関数
-def discretize_state(state, bins=(8, 8, 10, 12)):
+def discretize_state(state, bins):
     # CartPole環境の状態の範囲を手動で設定
     cart_position_bounds = [-2.4, 2.4]
-    cart_velocity_bounds = [-4, 4]
+    cart_velocity_bounds = [-24, 24]
     pole_angle_bounds = [-0.2095, 0.2095]
     pole_velocity_bounds = [-4, 4]
     
     # 状態を正規化
-    cart_position = np.linspace(cart_position_bounds[0], cart_position_bounds[1], bins[0] + 1)
-    cart_velocity = np.linspace(cart_velocity_bounds[0], cart_velocity_bounds[1], bins[1] + 1)
-    pole_angle = np.linspace(pole_angle_bounds[0], pole_angle_bounds[1], bins[2] + 1)
-    pole_velocity = np.linspace(pole_velocity_bounds[0], pole_velocity_bounds[1], bins[3] + 1)
+    cart_position = np.linspace(cart_position_bounds[0], cart_position_bounds[1], bins.cart_pos + 1)
+    cart_velocity = np.linspace(cart_velocity_bounds[0], cart_velocity_bounds[1], bins.cart_vel + 1)
+    pole_angle = np.linspace(pole_angle_bounds[0], pole_angle_bounds[1], bins.pole_angle + 1)
+    pole_velocity = np.linspace(pole_velocity_bounds[0], pole_velocity_bounds[1], bins.pole_vel + 1)
     
     # 状態を離散化
     discrete_state = [
@@ -29,21 +66,22 @@ def discretize_state(state, bins=(8, 8, 10, 12)):
         np.digitize(state[2], pole_angle),
         np.digitize(state[3], pole_velocity)
     ]
-    for i in range(len(bins)):
+    bin_arr = bins.get_bins()
+    for i in range(bins.bins_size()):
         if discrete_state[i] < 0:
             discrete_state[i] = 0
-        if discrete_state[i] >= bins[i]:
-            discrete_state[i] = bins[i] - 1
+        if discrete_state[i] >= bin_arr[i]:
+            discrete_state[i] = bin_arr[i] - 1
     return tuple(discrete_state)
 
 # Q学習アルゴリズムの実装
-def q_learning(env, episodes=5000, gamma=0.95, alpha=0.5, epsilon=1.0, epsilon_decay=0.99, min_epsilon=0.01):
+def q_learning(env, episodes=2000, gamma=0.95, alpha=0.2, epsilon=0.5, epsilon_decay=0.99, min_epsilon=0.01):
 
     global bins_global
 
     # Q-tableの初期化
-    q_table = np.zeros(bins_global + (env.action_space.n,))
-    
+    q_table = np.zeros(bins_global.get_bins() + (env.action_space.n,))
+    print("q_table shape -> ",q_table.shape)
     rewards = []
     
     for episode in range(episodes):
@@ -99,7 +137,7 @@ def test_policy(q_table, episodes=10,max_steps=1000):
         state = discretize_state(state,bins_global)
         done = False
         episode_reward = 0
-        
+        stand_time = 0
         while not done:
             test_env.render()  # 環境を描画
             action = np.argmax(q_table[state])
@@ -108,8 +146,9 @@ def test_policy(q_table, episodes=10,max_steps=1000):
             next_state = discretize_state(next_state,bins_global)
             episode_reward += reward
             state = next_state
-        time.sleep(0.5)
-        print(f"test episode {episode}: reward = {episode_reward}")
+            stand_time += 1
+        time.sleep(0.2)
+        print(f"test episode {episode}: reward = {episode_reward} stand_time = {stand_time}")
 
 # テスト実行
 test_policy(q_table,5,2000)
