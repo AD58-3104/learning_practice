@@ -12,3 +12,5 @@ export -f install_isaaclab_extension
 
 
 find -L "${ISAACLAB_PATH}/source" -mindepth 1 -maxdepth 1 -type d -exec bash -c 'install_isaaclab_extension "{}"' \;
+uv pip install -e ${ISAACLAB_PATH}/source/isaaclab_rl["all"]
+uv pip install -e ${ISAACLAB_PATH}/source/isaaclab_mimic["all"]
