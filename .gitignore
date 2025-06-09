@@ -1,3 +1,4 @@
 IsaacLab/**
 *.egg-info
 isaacsim/**
+_isaac_sim/**
