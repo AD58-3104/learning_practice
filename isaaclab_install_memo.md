@@ -1,0 +1,10 @@
+ひとまず分かったのは、IsaacLabのインストールを行う際にuv等を使う必要が無さそうな事。
+なぜかというと、IsaacLab側でのインストールスクリプト、isaaclab.shではIsaacLabディレクトリの中に_isaac_simというディレクトリがあれば
+pythonのバイナリとしてその中のpython.shを利用するからである。このスクリプトは、isaacsimが自前で持っているpythonのkitのバイナリを指定して
+実行するやつなので、kit -m pip installとするのでそのkitのpythonのpipの中に色々インストールされる。
+これほぼ仮想環境みたいなもんである。
+だから、IsaacLabのインストールの方法としては
+
+1. IsaacLabをクローン
+2. IsaacLabのディレクトリの中に、nvidiaのとこからダウンロードしたisaacsimを入れる。そのとき、_isaac_simというディレクトリ名にする。
+3. IsaacLab/isaaclab.sh --installを普通に実行する。これをすると普通にisaacsimがkitとして持ってるpythonの中に色々DLされるのでもうこれを仮想環境として使っちゃえば良いわけ。
