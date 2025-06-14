@@ -2,3 +2,12 @@ IsaacLab/**
 *.egg-info
 isaacsim/**
 _isaac_sim/**
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
