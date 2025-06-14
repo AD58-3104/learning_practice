@@ -48,18 +48,18 @@ def generate_joint_strings(string_list, float_val:float):
 if __name__ == "__main__":
     # サンプルデータ
     string_elem_list = [
-        "left_hip_yaw_joint",
-        "right_hip_yaw_joint",
-        "left_hip_roll_joint",
-        "left_hip_pitch_joint",
-        "left_knee_joint",
-        "left_ankle_joint",
-        "right_hip_roll_joint",
-        "right_hip_pitch_joint",
-        "right_knee_joint",
-        "right_ankle_joint"
+        "left_hip_yaw",
+        "right_hip_yaw",
+        "left_hip_roll",
+        "left_hip_pitch",
+        "left_knee",
+        "left_ankle",
+        "right_hip_roll",
+        "right_hip_pitch",
+        "right_knee",
+        "right_ankle"
     ]
-    float_elem_list = [0,50,100,150,200,250,300]
+    float_elem_list = [0.0,50.0,100.0,150.0,200.0,250.0,300.0]
     
     # string_lists = generate_combinations_as_lists(string_elem_list)
 
