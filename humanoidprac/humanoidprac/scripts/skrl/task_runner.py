@@ -110,7 +110,9 @@ class TaskRunner:
     
     def run_all_experiments(self, start_from: int = 1, delay: int = 0) -> None:
         """すべての実験を順次実行"""
-        experiments = self.config.get('experiments', [])
+
+        select_exp = self.config.get('base_config', {}).get('exp_select',"exp1")
+        experiments = self.config.get('experiments', []).get(select_exp,[])
         
         if not experiments:
             print("エラー: 実験設定が見つかりません")
