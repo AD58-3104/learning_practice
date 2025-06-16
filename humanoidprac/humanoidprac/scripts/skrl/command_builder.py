@@ -2,9 +2,10 @@
 
 import sys
 import os
+import subprocess
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget,
-    QListWidgetItem, QLabel, QTextEdit
+    QListWidgetItem, QLabel, QTextEdit, QPushButton
 )
 from PyQt6.QtCore import Qt
 
@@ -21,7 +22,7 @@ class CommandBuilderApp(QWidget):
         # --- ウィンドウの基本設定 ---
         self.setWindowTitle('コマンドビルダー & ファイルプレビュー')
         # ウィンドウサイズを広げる
-        self.setGeometry(200, 200, 800, 500)
+        self.setGeometry(200, 200, 1000, 500)
 
         # --- メインレイアウト（左右分割） ---
         main_layout = QHBoxLayout()
@@ -51,22 +52,40 @@ class CommandBuilderApp(QWidget):
         # 4. ファイル/ディレクトリ一覧
         left_panel_layout.addWidget(QLabel('📋 ファイル/ディレクトリ一覧 (クリックしてコピー/プレビュー):'))
         self.file_list_widget = QListWidget()
-        self.file_list_widget.itemClicked.connect(self.copy_to_clipboard)
+        # self.file_list_widget.itemClicked.connect(self.copy_to_clipboard)
+        self.file_list_widget.currentItemChanged.connect(self.copy_to_clipboard)
         self.file_list_widget.currentItemChanged.connect(self.display_file_content)
         left_panel_layout.addWidget(self.file_list_widget)
+
+        self.exec_button = QPushButton("Execute")
+        self.exec_button.clicked.connect(self.execute_current_command)
+        left_panel_layout.addWidget(self.exec_button)
 
         # 左側パネルをウィジェットとしてまとめる
         left_widget = QWidget()
         left_widget.setLayout(left_panel_layout)
 
+        # 右側パネルのレイアウト
+        right_panel_layout = QVBoxLayout()
+
         # --- ★追加: 右側パネル（テキストプレビュー） ---
         self.preview_text_edit = QTextEdit()
         self.preview_text_edit.setReadOnly(True) # 読み取り専用にする
         self.preview_text_edit.setPlaceholderText("左のリストからファイルをクリックすると、ここに内容が表示されます。")
+        right_panel_layout.addWidget(self.preview_text_edit)
+
+        self.command_preview_line_edit = QLineEdit()
+        self.command_preview_line_edit.setReadOnly(True)
+        right_panel_layout.addWidget(self.command_preview_line_edit)
+
+        # 右側ウィジェット
+        right_widget = QWidget()
+        right_widget.setLayout(right_panel_layout)
+
 
         # --- メインレイアウトに左右のパネルを追加 ---
         main_layout.addWidget(left_widget)
-        main_layout.addWidget(self.preview_text_edit)
+        main_layout.addWidget(right_widget)
         # 左右のパネルの幅の比率を設定 (1:1)
         main_layout.setStretch(0, 1)
         main_layout.setStretch(1, 1)
@@ -90,6 +109,8 @@ class CommandBuilderApp(QWidget):
             self.file_list_widget.addItem("有効なディレクトリではありません。")
 
     def copy_to_clipboard(self, item: QListWidgetItem):
+        if not item:
+            return
         display_text = item.text()
         parts = display_text.split(': ', 1)
         if len(parts) == 2 and parts[0].isdigit():
@@ -103,6 +124,7 @@ class CommandBuilderApp(QWidget):
         final_string = command_template + full_path.replace('\\', '/')
         clipboard = QApplication.clipboard()
         clipboard.setText(final_string)
+        self.command_preview_line_edit.setText(final_string)
         print(f"クリップボードにコピーしました: {final_string}")
 
     def display_file_content(self, current_item: QListWidgetItem, previous_item: QListWidgetItem):
@@ -156,6 +178,11 @@ class CommandBuilderApp(QWidget):
                 self.preview_text_edit.setText(f"ファイル読み込みエラー:\n{e}")
         else:
             self.preview_text_edit.setText(f"ファイルが見つかりません:\n{preview_target_path}")
+
+    def execute_current_command(self):
+        command = "gnome-terminal -- " + self.command_preview_line_edit.text()
+        print(f"Execute command:: {command}")
+        subprocess.run(command,shell=True)
 
 def main():
     app = QApplication(sys.argv)
