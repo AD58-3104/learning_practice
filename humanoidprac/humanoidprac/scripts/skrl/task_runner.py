@@ -45,7 +45,7 @@ class TaskRunner:
         # 基本コマンド
         cmd = [
             python_command, 'train.py',
-            '--task', base_config.get('task', 'Humanoidprac-v0'),
+            '--task', base_config.get('task', 'Humanoidprac-v0-train'),
             '--num_envs',str(base_config.get('num_envs', 1024))
         ]
         

@@ -148,7 +148,7 @@ experiments:
 
 # 基本設定（必要に応じて調整）
 base_config:
-  task: "Humanoidprac-v0"
+  task: "Humanoidprac-v0-train"
   headless: true
   directory: "h1_flat/joint_experiment"
   python_command: "/home/satoshi/learning_practice/IsaacLab/./isaaclab.sh -p"
