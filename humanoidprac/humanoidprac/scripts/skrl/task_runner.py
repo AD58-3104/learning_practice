@@ -45,7 +45,7 @@ class TaskRunner:
         # 基本コマンド
         cmd = [
             python_command, 'train.py',
-            '--task', base_config.get('task', 'Humanoidprac-v0-train'),
+            '--task', base_config.get('task', 'None'),
             '--num_envs',str(base_config.get('num_envs', 1024))
         ]
         
@@ -54,7 +54,7 @@ class TaskRunner:
             cmd.append('--headless')
         
         # エージェント設定
-        directory = base_config.get('directory', 'h1_flat/ex')
+        directory = base_config.get('directory', 'h1_flat/default')
         cmd.append(f'agent.agent.experiment.directory="{directory}"')
         
         # トルク設定
