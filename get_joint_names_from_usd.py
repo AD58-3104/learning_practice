@@ -10,7 +10,7 @@ except ImportError:
     print("エラー: usd-coreがインストールされていません")
     sys.exit(1)
 
-def find_all_joints(usd_file_path, verbose=False):
+def find_all_joints(usd_file_path, verbose=False, joint_details=False):
     """USDファイルからすべてのタイプのジョイントを探す"""
     
     stage = Usd.Stage.Open(str(usd_file_path))
@@ -40,6 +40,12 @@ def find_all_joints(usd_file_path, verbose=False):
                 print(f"  パス: {prim_path}")
                 print(f"  タイプ: {joint_type}")
                 analyze_physics_joint(joint, prim)
+            
+            if joint_details:
+                print(f"\n[Physics Joint詳細情報]")
+                print(f"  パス: {prim_path}")
+                print(f"  タイプ: {joint_type}")
+                analyze_physics_joint_details(joint, prim)
         
         # 特定のジョイントタイプをチェック
         elif prim.IsA(UsdPhysics.RevoluteJoint):
@@ -47,22 +53,38 @@ def find_all_joints(usd_file_path, verbose=False):
             if verbose:
                 print(f"\n[Revolute Joint] {prim_path}")
                 analyze_revolute_joint(prim)
+            
+            if joint_details:
+                print(f"\n[Revolute Joint詳細情報] {prim_path}")
+                analyze_revolute_joint_details(prim)
                 
         elif prim.IsA(UsdPhysics.PrismaticJoint):
             joint_types["PrismaticJoint"].append(prim_path)
             if verbose:
                 print(f"\n[Prismatic Joint] {prim_path}")
                 analyze_prismatic_joint(prim)
+            
+            if joint_details:
+                print(f"\n[Prismatic Joint詳細情報] {prim_path}")
+                analyze_prismatic_joint_details(prim)
                 
         elif prim.IsA(UsdPhysics.SphericalJoint):
             joint_types["SphericalJoint"].append(prim_path)
             if verbose:
                 print(f"\n[Spherical Joint] {prim_path}")
+            
+            if joint_details:
+                print(f"\n[Spherical Joint詳細情報] {prim_path}")
+                analyze_spherical_joint_details(prim)
                 
         elif prim.IsA(UsdPhysics.FixedJoint):
             joint_types["FixedJoint"].append(prim_path)
             if verbose:
                 print(f"\n[Fixed Joint] {prim_path}")
+            
+            if joint_details:
+                print(f"\n[Fixed Joint詳細情報] {prim_path}")
+                analyze_fixed_joint_details(prim)
         
         # Articulation Root をチェック
         if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
@@ -89,12 +111,16 @@ def find_all_joints(usd_file_path, verbose=False):
         for joint_type, paths in joint_types.items():
             if paths:
                 print(f"\n{joint_type}: {len(paths)}個")
-                if not verbose:
-                    # verbose=Falseの場合、最初の3つだけ表示
+                if not verbose and not joint_details:
+                    # verbose=FalseかつjointDetails=Falseの場合、最初の3つだけ表示
                     for i, path in enumerate(paths[:3]):
                         print(f"  - {path}")
                     if len(paths) > 3:
                         print(f"  ... 他 {len(paths) - 3} 個")
+                elif joint_details:
+                    # joint_details=Trueの場合、すべて表示
+                    for path in paths:
+                        print(f"  - {path}")
         
         print(f"\n合計ジョイント数: {total_joints}")
         
@@ -160,12 +186,193 @@ def analyze_prismatic_joint(prim):
     if lower_limit.HasValue() and upper_limit.HasValue():
         print(f"  制限: [{lower_limit.Get():.2f}, {upper_limit.Get():.2f}] units")
 
+def analyze_physics_joint_details(joint, prim):
+    """Physics Jointの詳細情報を表示"""
+    print("  === 基本情報 ===")
+    print(f"  フルパス: {prim.GetPath()}")
+    print(f"  名前: {prim.GetName()}")
+    print(f"  タイプ名: {prim.GetTypeName()}")
+    
+    # Body関係
+    body0_rel = joint.GetBody0Rel()
+    body1_rel = joint.GetBody1Rel()
+    
+    print("\n  === ボディ関係 ===")
+    if body0_rel.GetTargets():
+        print(f"  Body0: {body0_rel.GetTargets()[0]}")
+    else:
+        print("  Body0: (未設定)")
+        
+    if body1_rel.GetTargets():
+        print(f"  Body1: {body1_rel.GetTargets()[0]}")
+    else:
+        print("  Body1: (未設定)")
+    
+    # 位置と方向
+    print("\n  === 位置と方向 ===")
+    local_pos0 = joint.GetLocalPos0Attr()
+    local_pos1 = joint.GetLocalPos1Attr()
+    local_rot0 = joint.GetLocalRot0Attr()
+    local_rot1 = joint.GetLocalRot1Attr()
+    
+    if local_pos0.HasValue():
+        print(f"  LocalPos0: {local_pos0.Get()}")
+    if local_pos1.HasValue():
+        print(f"  LocalPos1: {local_pos1.Get()}")
+    if local_rot0.HasValue():
+        print(f"  LocalRot0: {local_rot0.Get()}")
+    if local_rot1.HasValue():
+        print(f"  LocalRot1: {local_rot1.Get()}")
+    
+    # ジョイント有効/無効
+    enabled_attr = joint.GetJointEnabledAttr()
+    if enabled_attr.HasValue():
+        print("\n  === 状態 ===")
+        print(f"  有効: {enabled_attr.Get()}")
+    
+    # すべての属性を表示
+    print("\n  === すべての属性 ===")
+    for attr in prim.GetAttributes():
+        if attr.HasValue():
+            print(f"  {attr.GetName()}: {attr.Get()}")
+
+def analyze_revolute_joint_details(prim):
+    """Revolute Jointの詳細情報を表示"""
+    joint = UsdPhysics.RevoluteJoint(prim)
+    
+    # 基本のPhysics Joint詳細を表示
+    analyze_physics_joint_details(joint, prim)
+    
+    print("\n  === Revolute Joint固有情報 ===")
+    
+    # 軸
+    axis_attr = joint.GetAxisAttr()
+    if axis_attr.HasValue():
+        print(f"  回転軸: {axis_attr.Get()}")
+    
+    # 制限
+    lower_limit = joint.GetLowerLimitAttr()
+    upper_limit = joint.GetUpperLimitAttr()
+    
+    if lower_limit.HasValue() and upper_limit.HasValue():
+        print(f"  角度制限: [{lower_limit.Get():.2f}, {upper_limit.Get():.2f}] degrees")
+    elif lower_limit.HasValue():
+        print(f"  下限角度: {lower_limit.Get():.2f} degrees")
+    elif upper_limit.HasValue():
+        print(f"  上限角度: {upper_limit.Get():.2f} degrees")
+    
+    # ドライブ関連
+    drive_api = UsdPhysics.DriveAPI.Apply(prim, "angular")
+    if drive_api:
+        print("\n  === ドライブ設定 ===")
+        
+        damping = drive_api.GetDampingAttr()
+        stiffness = drive_api.GetStiffnessAttr()
+        target_position = drive_api.GetTargetPositionAttr()
+        target_velocity = drive_api.GetTargetVelocityAttr()
+        max_force = drive_api.GetMaxForceAttr()
+        
+        if damping.HasValue():
+            print(f"  ダンピング: {damping.Get()}")
+        if stiffness.HasValue():
+            print(f"  剛性: {stiffness.Get()}")
+        if target_position.HasValue():
+            print(f"  目標位置: {target_position.Get()}")
+        if target_velocity.HasValue():
+            print(f"  目標速度: {target_velocity.Get()}")
+        if max_force.HasValue():
+            print(f"  最大力: {max_force.Get()}")
+
+def analyze_prismatic_joint_details(prim):
+    """Prismatic Jointの詳細情報を表示"""
+    joint = UsdPhysics.PrismaticJoint(prim)
+    
+    # 基本のPhysics Joint詳細を表示
+    analyze_physics_joint_details(joint, prim)
+    
+    print("\n  === Prismatic Joint固有情報 ===")
+    
+    # 軸
+    axis_attr = joint.GetAxisAttr()
+    if axis_attr.HasValue():
+        print(f"  移動軸: {axis_attr.Get()}")
+    
+    # 制限
+    lower_limit = joint.GetLowerLimitAttr()
+    upper_limit = joint.GetUpperLimitAttr()
+    
+    if lower_limit.HasValue() and upper_limit.HasValue():
+        print(f"  移動制限: [{lower_limit.Get():.2f}, {upper_limit.Get():.2f}] units")
+    elif lower_limit.HasValue():
+        print(f"  下限位置: {lower_limit.Get():.2f} units")
+    elif upper_limit.HasValue():
+        print(f"  上限位置: {upper_limit.Get():.2f} units")
+    
+    # ドライブ関連
+    drive_api = UsdPhysics.DriveAPI.Apply(prim, "linear")
+    if drive_api:
+        print("\n  === ドライブ設定 ===")
+        
+        damping = drive_api.GetDampingAttr()
+        stiffness = drive_api.GetStiffnessAttr()
+        target_position = drive_api.GetTargetPositionAttr()
+        target_velocity = drive_api.GetTargetVelocityAttr()
+        max_force = drive_api.GetMaxForceAttr()
+        
+        if damping.HasValue():
+            print(f"  ダンピング: {damping.Get()}")
+        if stiffness.HasValue():
+            print(f"  剛性: {stiffness.Get()}")
+        if target_position.HasValue():
+            print(f"  目標位置: {target_position.Get()}")
+        if target_velocity.HasValue():
+            print(f"  目標速度: {target_velocity.Get()}")
+        if max_force.HasValue():
+            print(f"  最大力: {max_force.Get()}")
+
+def analyze_spherical_joint_details(prim):
+    """Spherical Jointの詳細情報を表示"""
+    joint = UsdPhysics.SphericalJoint(prim)
+    
+    # 基本のPhysics Joint詳細を表示
+    analyze_physics_joint_details(joint, prim)
+    
+    print("\n  === Spherical Joint固有情報 ===")
+    
+    # 球面ジョイントは通常、軸制限や円錐制限を持つ
+    cone_angle_attr = prim.GetAttribute("physics:coneAngle0Limit")
+    if cone_angle_attr and cone_angle_attr.HasValue():
+        print(f"  円錐角度制限: {cone_angle_attr.Get():.2f} degrees")
+    
+    # ドライブ関連（もし存在すれば）
+    drive_api = UsdPhysics.DriveAPI.Apply(prim, "rotational")
+    if drive_api:
+        print("\n  === ドライブ設定 ===")
+        
+        damping = drive_api.GetDampingAttr()
+        stiffness = drive_api.GetStiffnessAttr()
+        
+        if damping.HasValue():
+            print(f"  ダンピング: {damping.Get()}")
+        if stiffness.HasValue():
+            print(f"  剛性: {stiffness.Get()}")
+
+def analyze_fixed_joint_details(prim):
+    """Fixed Jointの詳細情報を表示"""
+    joint = UsdPhysics.FixedJoint(prim)
+    
+    # 基本のPhysics Joint詳細を表示
+    analyze_physics_joint_details(joint, prim)
+    
+    print("\n  === Fixed Joint固有情報 ===")
+    print("  このジョイントは2つのボディを固定的に結合します。")
+    print("  相対的な動きは許可されません。")
+
 def check_alternative_structures(stage):
     """代替のジョイント構造をチェック"""
     
     # すべての関係性をチェック
     relationships = defaultdict(list)
-    constraints = []
     
     for prim in stage.Traverse():
         # Constraint API をチェック
@@ -240,6 +447,8 @@ def main():
     parser.add_argument('usd_file', help='読み込むUSDファイル')
     parser.add_argument('-v', '--verbose', action='store_true', 
                        help='詳細な情報を表示')
+    parser.add_argument('-j', '--joint-details', action='store_true',
+                       help='関節の詳細情報を表示')
     
     args = parser.parse_args()
     
@@ -248,7 +457,7 @@ def main():
         print(f"エラー: ファイルが見つかりません: {args.usd_file}")
         sys.exit(1)
     
-    find_all_joints(args.usd_file, args.verbose)
+    find_all_joints(args.usd_file, args.verbose, args.joint_details)
 
 if __name__ == "__main__":
     main()
