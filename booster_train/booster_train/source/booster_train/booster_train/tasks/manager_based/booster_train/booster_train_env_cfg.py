@@ -47,13 +47,13 @@ BOOSTER_T1_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.9),
+        pos=(0.0, 0.0, 0.72),
         joint_pos={
             "AAHead_yaw" : 0.0, 
+            "Head_pitch" : 0.0, 
+            "Waist" : 0.0, 
             "Left_Shoulder_Pitch" : 0.0, 
             "Right_Shoulder_Pitch" : 0.0,   # ここはラジアンで指定するっぽい
-            "Waist" : 0.0, 
-            "Head_pitch" : 0.0, 
             "Left_Shoulder_Roll" : 0.0, 
             "Left_Elbow_Pitch" : 0.0, 
             "Left_Elbow_Yaw" : 0.0, 
@@ -61,18 +61,18 @@ BOOSTER_T1_CFG = ArticulationCfg(
             "Right_Elbow_Pitch" : 0.0, 
             "Right_Elbow_Yaw" : 0.0, 
 
-            "Left_Hip_Pitch" : 0.0, 
+            "Left_Hip_Pitch" : -0.2, 
             "Left_Hip_Roll" : 0.0, 
             "Left_Hip_Yaw" : 0.0, 
-            "Left_Knee_Pitch" : 0.0, 
-            "Left_Ankle_Pitch" : 0.0, 
+            "Left_Knee_Pitch" : 0.4, 
+            "Left_Ankle_Pitch" : -0.25, 
             "Left_Ankle_Roll" : 0.0, 
             
-            "Right_Hip_Pitch" : 0.0, 
+            "Right_Hip_Pitch" : -0.2, 
             "Right_Hip_Roll" : 0.0, 
             "Right_Hip_Yaw" : 0.0, 
-            "Right_Knee_Pitch" : 0.0, 
-            "Right_Ankle_Pitch" : 0.0, 
+            "Right_Knee_Pitch" : 0.4, 
+            "Right_Ankle_Pitch" : -0.25, 
             "Right_Ankle_Roll" : 0.0,
         },
         joint_vel={".*": 0.0},
@@ -84,18 +84,18 @@ BOOSTER_T1_CFG = ArticulationCfg(
             effort_limit=200.0,
             velocity_limit=10.0,
             stiffness={
-                ".*Hip_Yaw.*": 100.0,
-                ".*Hip_Roll": 100.0,
+                ".*Hip_Yaw.*": 200.0,
+                ".*Hip_Roll": 200.0,
                 ".*Hip_Pitch.*": 200.0,
                 ".*_Knee_Pitch": 200.0,
-                ".*_Ankle_.*": 200.0,
+                ".*_Ankle_.*": 50.0,
             },
             damping={
-                ".*Hip_Yaw.*": 3.0,
-                ".*Hip_Roll": 3.0,
-                ".*Hip_Pitch.*": 6.0,
-                ".*_Knee_Pitch": 6.0,
-                ".*_Ankle_.*": 6.0,
+                ".*Hip_Yaw.*": 5.0,
+                ".*Hip_Roll": 5.0,
+                ".*Hip_Pitch.*": 5.0,
+                ".*_Knee_Pitch": 5.0,
+                ".*_Ankle_.*": 1.0,
             },
         ),
         "arms": ImplicitActuatorCfg(
@@ -114,6 +114,13 @@ BOOSTER_T1_CFG = ArticulationCfg(
                 ".*_Elbow_.*": 0.01,
             },
         ),
+        "bodies": ImplicitActuatorCfg(
+            joint_names_expr=["Waist","AAHead_yaw", "Head_pitch"],
+            effort_limit=100.0,
+            velocity_limit=100.0,
+            stiffness=100.0,
+            damping=10.0,
+        )
     },
 )
 
