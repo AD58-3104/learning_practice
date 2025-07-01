@@ -199,9 +199,8 @@ class ObservationsCfg:
         imu_angular_velocity = ObsTerm(func=mdp.imu_ang_vel,
                                         params={"asset_cfg": SceneEntityCfg("base_imu")},     #, body_names="Trunk"
                                        )
-        imu_linear_acceleration = ObsTerm(func=mdp.imu_lin_acc,
-                                            params={"asset_cfg": SceneEntityCfg("base_imu")},     #, body_names="Trunk"
-                                          )
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel) # これはkinematicsとorientationから計算するらしい。多分stanceの順運動学からやるんだろ
+        root_lin_vel_w = ObsTerm(func=mdp.root_lin_vel_w) # ワールド座標系での速度。これ現実でどうやって取るのか知らん。意味不明
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self) -> None:
@@ -299,15 +298,17 @@ class RewardsCfg:
     # dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=0.0)
     
     # 姿勢に関する正則化項
-    pose_regularization = RewTerm(func=mdp.pose_regularization, weight=1.0)
+    pose_regularization = RewTerm(func=mdp.pose_regularization, weight=4.0)
     # コマンド追従
-    command_tracking = RewTerm(func=mdp.command_tracking,params = {"command_name":"base_velocity"}, weight=1.0)
+    command_tracking = RewTerm(func=mdp.command_tracking,params = {"command_name":"base_velocity"}, weight=42.0)
     # 長く生き残る方が報酬が高い
     # これはterminationsConfigの方で生き残り基準を設定する。基準はroll,pitch角度とbaseの高さが規定を満たす事
-    is_alive = RewTerm(func=mdp.is_alive, weight=1e-3)
+    is_alive = RewTerm(func=mdp.is_alive, weight=1e-4 * 4)
     # 足上げ高さに関する報酬
-    foot_clearance = RewTerm(func=mdp.foot_clearance,weight=1.0)
+    foot_clearance = RewTerm(func=mdp.foot_clearance,weight=18.0)
 
+    # パラメータに関するメモ
+    # 姿勢以外の値を大きくしたらめちゃくちゃ足を開いてしまった (これは論文の重みを見る前の試行の話)
 
 @configclass
 class TerminationsCfg:

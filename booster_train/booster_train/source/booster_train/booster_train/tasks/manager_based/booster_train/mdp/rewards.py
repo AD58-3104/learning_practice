@@ -90,11 +90,12 @@ def track_lin_vel_xy_yaw_frame_exp(
     return torch.exp(-lin_vel_error / std**2)
 
 
-
-def kernel_func(x:torch.tensor) -> torch.Tensor:
+# このカーネル関数はxの絶対値が大きいほど値が小さくなる。逆に、小さいほど値が大きくなる。
+# つまり、以下の報酬系は全てノルムが小さい方が良いことになる。
+def kernel_func(x:torch.tensor,sensitivity:float = 1.0) -> torch.Tensor:
     """Kernel function for rewards."""
-    sensitivity = 1.0
-    return 2 / (torch.exp(-x * sensitivity) + torch.exp(x * sensitivity))
+    return 2 / ((torch.exp(-x * sensitivity) + torch.exp(x * sensitivity)))
+# sensitivityの値は今の所論文の数値を入れている
 
 
 def pose_regularization(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
@@ -111,9 +112,8 @@ def pose_regularization(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scen
                         -0.2, 0.0, 0.0,
                         0.4, -0.25, 0.0], device=env.device)
     target_joint_indices = [robot.data.joint_names.index(name) for name in nominal_joint_names]
-
-    arm_angles = joint_pos[:, target_joint_indices]
-    reward = kernel_func(torch.norm(arm_angles - nominal_joint_pos,p=2 ,dim=1)) * env.step_dt
+    foot_angles = joint_pos[:, target_joint_indices]
+    reward = kernel_func(torch.norm(foot_angles - nominal_joint_pos,p=2 ,dim=1),sensitivity = 3) * env.step_dt
     return reward
 
 # メモ、bVbの方はbase link frameの速度、IVbはinertial reference frameの速度
@@ -130,7 +130,7 @@ def command_tracking(env, command_name: str, asset_cfg: SceneEntityCfg = SceneEn
         Cv = 1.0
     if env.common_step_counter < 500: # 最初の500ステップは報酬を0にする
         Cv = 0.0
-    return Cv * kernel_func(norm) * env.step_dt
+    return Cv * kernel_func(norm,sensitivity = 9) * env.step_dt
 
 
 def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
@@ -163,9 +163,9 @@ def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> t
     #     stance_leg_index = 0
 
     # 何かの重み？(論文読んでも説明が無くて意味不明)
-    w_phi = 4.0
+    w_phi = 10.0
     # 目標の足上げ高さ?(論文読んでも説明が無くて意味不明)
-    pz_des = 0.15
+    pz_des = 0.40
     swing_heights = torch.gather(foot_heights,dim=1,index=swing_leg_index.unsqueeze(1))     # torch.Size([4096, 1])
     stance_heights = torch.gather(foot_heights,dim=1,index=stance_leg_index.unsqueeze(1))   # torch.Size([4096, 1])
     foot_angles0 = foot_angles[:,0].unsqueeze(1) # torch.Size([4096, 1])
@@ -180,4 +180,4 @@ def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> t
     Cf = env.common_step_counter / (4800.0) 
     if Cf > 1.0:
         Cf = 1.0
-    return Cf * kernel_func(norm) * env.step_dt
+    return Cf * kernel_func(norm,sensitivity = 10) * env.step_dt
