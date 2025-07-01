@@ -16,8 +16,9 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.sensors import ContactSensorCfg,ImuCfg
 from isaaclab.actuators import  ImplicitActuatorCfg
+import torch
 
 
 from . import mdp
@@ -47,17 +48,17 @@ BOOSTER_T1_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.72),
+        pos=(0.0, 0.0, 0.72 - 0.0841),
         joint_pos={
             "AAHead_yaw" : 0.0, 
             "Head_pitch" : 0.0, 
             "Waist" : 0.0, 
             "Left_Shoulder_Pitch" : 0.0, 
             "Right_Shoulder_Pitch" : 0.0,   # ここはラジアンで指定するっぽい
-            "Left_Shoulder_Roll" : 0.0, 
+            "Left_Shoulder_Roll" : -0.7853981634, 
             "Left_Elbow_Pitch" : 0.0, 
             "Left_Elbow_Yaw" : 0.0, 
-            "Right_Shoulder_Roll" : 0.0, 
+            "Right_Shoulder_Roll" : 0.7853981634, 
             "Right_Elbow_Pitch" : 0.0, 
             "Right_Elbow_Yaw" : 0.0, 
 
@@ -132,7 +133,7 @@ BOOSTER_T1_CFG = ArticulationCfg(
 
 @configclass
 class BoosterTrainSceneCfg(InteractiveSceneCfg):
-    """Configuration for a cart-pole scene."""
+    """Configuration for a booster t1 scene."""
 
     # ground plane
     ground = AssetBaseCfg(
@@ -151,7 +152,7 @@ class BoosterTrainSceneCfg(InteractiveSceneCfg):
 
     # contact sensor(単に終了等を判断するために必要)
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
-
+    base_imu = ImuCfg(prim_path="{ENV_REGEX_NS}/Robot/Trunk",gravity_bias=(0,0,0),debug_vis=True)
 ##
 # MDP settings
 ##
@@ -192,6 +193,15 @@ class ObservationsCfg:
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel)
+        imu_orientation = ObsTerm(func=mdp.imu_orientation,
+                                    params={"asset_cfg": SceneEntityCfg("base_imu")},     #, body_names="Trunk"
+                                  )
+        imu_angular_velocity = ObsTerm(func=mdp.imu_ang_vel,
+                                        params={"asset_cfg": SceneEntityCfg("base_imu")},     #, body_names="Trunk"
+                                       )
+        imu_linear_acceleration = ObsTerm(func=mdp.imu_lin_acc,
+                                            params={"asset_cfg": SceneEntityCfg("base_imu")},     #, body_names="Trunk"
+                                          )
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self) -> None:
@@ -280,22 +290,23 @@ class EventCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
 
-    # -- task
-    track_lin_vel_xy_exp = RewTerm(
-        func=mdp.track_lin_vel_xy_exp, weight=1.0, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
-    )
-    track_ang_vel_z_exp = RewTerm(
-        func=mdp.track_ang_vel_z_exp, weight=0.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
-    )
-    # -- penalties
-    lin_vel_z_l2 = RewTerm(func=mdp.lin_vel_z_l2, weight=-2.0)
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
-    dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5)
-    dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
-    action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
+    
+    # dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5)
+    # dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
+    # action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
     # -- optional penalties
-    flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)
-    dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=0.0)
+    # flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)
+    # dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=0.0)
+    
+    # 姿勢に関する正則化項
+    pose_regularization = RewTerm(func=mdp.pose_regularization, weight=1.0)
+    # コマンド追従
+    command_tracking = RewTerm(func=mdp.command_tracking,params = {"command_name":"base_velocity"}, weight=1.0)
+    # 長く生き残る方が報酬が高い
+    # これはterminationsConfigの方で生き残り基準を設定する。基準はroll,pitch角度とbaseの高さが規定を満たす事
+    is_alive = RewTerm(func=mdp.is_alive, weight=1e-3)
+    # 足上げ高さに関する報酬
+    foot_clearance = RewTerm(func=mdp.foot_clearance,weight=1.0)
 
 
 @configclass
@@ -305,10 +316,12 @@ class TerminationsCfg:
     # (1) Time out
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     # (2) Cart out of bounds
-    base_contact = DoneTerm(
-        func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="Trunk"), "threshold": 1.0},
-    )
+    # base_contact = DoneTerm(
+    #     func=mdp.illegal_contact,
+    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="Trunk"), "threshold": 1.0},
+    # )
+    root_height_below_minimum = DoneTerm(mdp.root_height_below_minimum,params={"minimum_height": 0.5})
+    bad_orientation = DoneTerm(mdp.bad_orientation,params={"limit_angle": 1.0}) # 60度くらいを超えたら終わり
 
 
 ##

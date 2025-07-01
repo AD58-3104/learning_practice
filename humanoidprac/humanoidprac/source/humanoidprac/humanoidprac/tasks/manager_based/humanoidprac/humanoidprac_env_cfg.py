@@ -110,13 +110,6 @@ all_target_joint_name = ["left_hip.*","left_knee","left_ankle.*","right_hip.*","
 @configclass
 class ActionsCfg:
     """Action specifications for the MDP."""
-    global all_target_joint_name
-    # joint_effort = mdp.JointEffortActionCfg(asset_name="robot", 
-    #                                         joint_names=all_target_joint_name,
-    #                                         scale=10.0) # scaleは適当
-    # joint_velocity = mdp.JointVelocityActionCfg(asset_name="robot", 
-    #                                         joint_names=all_target_joint_name,
-    #                                         scale=10.0) # scaleは適当
     joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], scale=0.5, use_default_offset=True)
     
 
