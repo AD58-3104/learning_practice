@@ -16,80 +16,6 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-def feet_air_time(
-    env: ManagerBasedRLEnv, command_name: str, sensor_cfg: SceneEntityCfg, threshold: float
-) -> torch.Tensor:
-    """Reward long steps taken by the feet using L2-kernel.
-
-    This function rewards the agent for taking steps that are longer than a threshold. This helps ensure
-    that the robot lifts its feet off the ground and takes steps. The reward is computed as the sum of
-    the time for which the feet are in the air.
-
-    If the commands are small (i.e. the agent is not supposed to take a step), then the reward is zero.
-    """
-    # extract the used quantities (to enable type-hinting)
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    # compute the reward
-    first_contact = contact_sensor.compute_first_contact(env.step_dt)[:, sensor_cfg.body_ids]
-    last_air_time = contact_sensor.data.last_air_time[:, sensor_cfg.body_ids]
-    reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
-    # no reward for zero command
-    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
-    return reward
-
-
-def feet_air_time_positive_biped(env, command_name: str, threshold: float, sensor_cfg: SceneEntityCfg) -> torch.Tensor:
-    """Reward long steps taken by the feet for bipeds.
-
-    This function rewards the agent for taking steps up to a specified threshold and also keep one foot at
-    a time in the air.
-
-    If the commands are small (i.e. the agent is not supposed to take a step), then the reward is zero.
-    """
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    # compute the reward
-    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
-    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
-    in_contact = contact_time > 0.0
-    in_mode_time = torch.where(in_contact, contact_time, air_time)
-    single_stance = torch.sum(in_contact.int(), dim=1) == 1
-    reward = torch.min(torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1)[0]
-    reward = torch.clamp(reward, max=threshold)
-    # no reward for zero command
-    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :2], dim=1) > 0.1
-    return reward
-
-
-def feet_slide(env, sensor_cfg: SceneEntityCfg, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
-    """Penalize feet sliding.
-
-    This function penalizes the agent for sliding its feet on the ground. The reward is computed as the
-    norm of the linear velocity of the feet multiplied by a binary contact sensor. This ensures that the
-    agent is penalized only when the feet are in contact with the ground.
-    """
-    # Penalize feet sliding
-    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
-    contacts = contact_sensor.data.net_forces_w_history[:, :, sensor_cfg.body_ids, :].norm(dim=-1).max(dim=1)[0] > 1.0
-    asset = env.scene[asset_cfg.name]
-
-    body_vel = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :2]
-    reward = torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
-    return reward
-
-
-def track_lin_vel_xy_yaw_frame_exp(
-    env, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
-) -> torch.Tensor:
-    """Reward tracking of linear velocity commands (xy axes) in the gravity aligned robot frame using exponential kernel."""
-    # extract the used quantities (to enable type-hinting)
-    asset = env.scene[asset_cfg.name]
-    vel_yaw = quat_rotate_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
-    lin_vel_error = torch.sum(
-        torch.square(env.command_manager.get_command(command_name)[:, :2] - vel_yaw[:, :2]), dim=1
-    )
-    return torch.exp(-lin_vel_error / std**2)
-
-
 # このカーネル関数はxの絶対値が大きいほど値が小さくなる。逆に、小さいほど値が大きくなる。
 # つまり、以下の報酬系は全てノルムが小さい方が良いことになる。
 def kernel_func(x:torch.tensor,sensitivity:float = 1.0) -> torch.Tensor:
@@ -113,7 +39,7 @@ def pose_regularization(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scen
                         0.4, -0.25, 0.0], device=env.device)
     target_joint_indices = [robot.data.joint_names.index(name) for name in nominal_joint_names]
     foot_angles = joint_pos[:, target_joint_indices]
-    reward = kernel_func(torch.norm(foot_angles - nominal_joint_pos,p=2 ,dim=1),sensitivity = 3) * env.step_dt
+    reward = kernel_func(torch.norm(foot_angles - nominal_joint_pos,p=2 ,dim=1),sensitivity = 3.0) * env.step_dt
     return reward
 
 # メモ、bVbの方はbase link frameの速度、IVbはinertial reference frameの速度
@@ -125,12 +51,12 @@ def command_tracking(env, command_name: str, asset_cfg: SceneEntityCfg = SceneEn
     ang_vel_error = command[:, 2] - robot.data.root_ang_vel_w[:, 2]
     target = torch.cat([xy_vel_w_err,xy_vel_b_err,ang_vel_error.unsqueeze(1)],dim=1)
     norm = torch.norm(target, p=2, dim=1)
-    Cv = env.common_step_counter / (4800.0) 
+    Cv = 0.01  
+    if env.common_step_counter > 500: # 最初の500ステップは報酬を0にする
+        Cv += env.common_step_counter / (4800.0)
     if Cv > 1.0:
         Cv = 1.0
-    if env.common_step_counter < 500: # 最初の500ステップは報酬を0にする
-        Cv = 0.0
-    return Cv * kernel_func(norm,sensitivity = 9) * env.step_dt
+    return Cv * kernel_func(norm,sensitivity = 9.0) * env.step_dt
 
 
 def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
@@ -163,7 +89,7 @@ def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> t
     #     stance_leg_index = 0
 
     # 何かの重み？(論文読んでも説明が無くて意味不明)
-    w_phi = 10.0
+    w_phi = 2.0
     # 目標の足上げ高さ?(論文読んでも説明が無くて意味不明)
     pz_des = 0.40
     swing_heights = torch.gather(foot_heights,dim=1,index=swing_leg_index.unsqueeze(1))     # torch.Size([4096, 1])
@@ -177,7 +103,7 @@ def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> t
                                     ],dim = 1) # torch.Size([4096, 4])
 
     norm = torch.norm(target,p=2,dim=1)        # torch.Size([4096]) 
-    Cf = env.common_step_counter / (4800.0) 
+    Cf = 0.05 + env.common_step_counter / (4800.0) 
     if Cf > 1.0:
         Cf = 1.0
-    return Cf * kernel_func(norm,sensitivity = 10) * env.step_dt
+    return Cf * kernel_func(norm,sensitivity = 10.0) * env.step_dt

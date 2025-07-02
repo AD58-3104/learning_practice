@@ -166,7 +166,7 @@ class CommandsCfg:
         resampling_time_range=(10.0, 10.0),
         rel_standing_envs=0.02,
         rel_heading_envs=1.0,
-        heading_command=True,
+        heading_command=False,
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
@@ -316,13 +316,8 @@ class TerminationsCfg:
 
     # (1) Time out
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    # (2) Cart out of bounds
-    # base_contact = DoneTerm(
-    #     func=mdp.illegal_contact,
-    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names="Trunk"), "threshold": 1.0},
-    # )
-    root_height_below_minimum = DoneTerm(mdp.root_height_below_minimum,params={"minimum_height": 0.5})
-    bad_orientation = DoneTerm(mdp.bad_orientation,params={"limit_angle": 1.0}) # 60度くらいを超えたら終わり
+    root_height_below_minimum = DoneTerm(mdp.root_height_below_minimum,params={"minimum_height": 0.6})
+    bad_orientation = DoneTerm(mdp.bad_orientation,params={"limit_angle": 1.2}) # 120度くらいを超えたら終わり
 
 
 ##
@@ -368,7 +363,7 @@ class BoosterTraisEnvCfg_PLAY(BoosterTrainEnvCfg):
         super().__post_init__()
 
         # make a smaller scene for play
-        self.scene.num_envs = 50
+        self.scene.num_envs = 20
         self.scene.env_spacing = 2.5
         # disable randomization for play
         self.observations.policy.enable_corruption = False
