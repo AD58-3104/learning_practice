@@ -119,4 +119,25 @@ def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> t
     Cf = 0.05 + env.common_step_counter / (4800.0) 
     if Cf > 1.0:
         Cf = 1.0
-    return Cf * kernel_func(norm,sensitivity = 10.0) * env.step_dt
+    return Cf * kernel_func(norm,sensitivity = 3.0) * env.step_dt
+
+# 平均に対して早すぎる関節があるときペナルティ
+def velocity_reguralize(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    robot = env.scene[asset_cfg.name]
+    target_names = [
+                    "Left_Hip_Pitch","Left_Hip_Roll",
+                    "Left_Knee_Pitch","Left_Ankle_Pitch","Left_Ankle_Roll",
+                    "Right_Hip_Pitch","Right_Hip_Roll",
+                    "Right_Knee_Pitch","Right_Ankle_Pitch","Right_Ankle_Roll"]
+    leg_joint_ids = [robot.data.joint_names.index(name) for name in target_names]
+    leg_velocities = joint_vel(env,asset_cfg)[:,leg_joint_ids]
+    # print("--------")
+    # print(leg_joint_ids)
+    # print(leg_velocities[:5])
+    mean = torch.mean(torch.abs(leg_velocities),dim=1).unsqueeze(1)
+    # print(mean[:5])
+    diffs = torch.abs(leg_velocities) - mean
+    diffs = torch.clamp(diffs,min=0.0)
+    sum = torch.sum(diffs,dim=1) / 10.0
+    # print(sum[:5])
+    return kernel_func(sum,sensitivity=5.0)*env.step_dt
