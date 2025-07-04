@@ -58,6 +58,19 @@ def command_tracking(env, command_name: str, asset_cfg: SceneEntityCfg = SceneEn
         Cv = 1.0
     return Cv * kernel_func(norm,sensitivity = 9.0) * env.step_dt
 
+def foot_z_distance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    robot = env.scene[asset_cfg.name]
+    # 各インデックスの取得
+    foot_names = ["left_foot_link", "right_foot_link"]
+    foot_ids = [robot.data.body_names.index(name) for name in foot_names]
+    # 脚の高さ、0 = 左足、 1 = 右足
+    foot_heights_left = robot.data.body_link_pos_w[:, foot_ids[0], 2]
+    foot_heights_right = robot.data.body_link_pos_w[:, foot_ids[1], 2]
+    # このカーネル関数は小さい方が大きいので、逆数にする
+    # 多分 0.4 ~ 0.01、つまり逆数にすると2.5 ~ 100くらいの間で推移するはずなので1.0 ~ 0.8くらい?
+    # return kernel_func( 1.0 / (foot_heights_left - foot_heights_right),sensitivity=0.2) * env.step_dt
+    return torch.abs(foot_heights_left - foot_heights_right) * env.step_dt
+
 
 def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Reward for the feet being above the ground."""
