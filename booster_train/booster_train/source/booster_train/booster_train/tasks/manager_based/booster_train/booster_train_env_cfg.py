@@ -17,8 +17,7 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab.sensors import ContactSensorCfg,ImuCfg
-from isaaclab.actuators import  ImplicitActuatorCfg
-import torch
+from isaaclab.actuators import  ImplicitActuatorCfg,IdealPDActuatorCfg
 
 
 from . import mdp
@@ -59,7 +58,7 @@ BOOSTER_T1_CFG = ArticulationCfg(
             "Left_Elbow_Pitch" : 0.0, 
             "Left_Elbow_Yaw" : 0.0, 
             "Right_Shoulder_Roll" : 0.7853981634, 
-            "Right_Elbow_Pitch" : 0.0, 
+            "Right_Elbow_Pitch" : 0.5, 
             "Right_Elbow_Yaw" : 0.0, 
 
             "Left_Hip_Pitch" : -0.2, 
@@ -80,10 +79,24 @@ BOOSTER_T1_CFG = ArticulationCfg(
     ),
     soft_joint_pos_limit_factor=0.9,
     actuators={
-        "legs": ImplicitActuatorCfg(
+        "legs": IdealPDActuatorCfg(
             joint_names_expr=[".*_Hip_.*", ".*_Knee_.*", ".*_Ankle_.*"],
-            effort_limit=200.0,
-            velocity_limit=10.0,
+            effort_limit_sim={
+                ".*Hip_Pitch.*" : 45.0,
+                ".*Hip_Roll": 30.0,
+                ".*Hip_Yaw.*": 30.0,
+                ".*_Knee_Pitch": 60.0,
+                ".*_Ankle_Pitch": 24.0,
+                ".*_Ankle_Roll": 15.0,
+            },
+            velocity_limit_sim={
+                ".*Hip_Pitch.*" : 12.5, #rad/s
+                ".*Hip_Roll": 10.9,
+                ".*Hip_Yaw.*": 10.9,
+                ".*_Knee_Pitch": 11.7,
+                ".*_Ankle_Pitch": 18.8,
+                ".*_Ankle_Roll": 12.4,
+            },
             stiffness={
                 ".*Hip_Yaw.*": 200.0,
                 ".*Hip_Roll": 200.0,
@@ -99,23 +112,19 @@ BOOSTER_T1_CFG = ArticulationCfg(
                 ".*_Ankle_.*": 1.0,
             },
         ),
-        "arms": ImplicitActuatorCfg(
+        "arms": IdealPDActuatorCfg(
             joint_names_expr=[
                 ".*_Shoulder_Pitch",
                 ".*_Shoulder_Roll",
                 ".*_Elbow_Pitch",
                 ".*_Elbow_Yaw",
             ],
-            effort_limit=300,
-            velocity_limit=100.0,
+            effort_limit=100,
+            velocity_limit=50.0,
             stiffness=40.0,
             damping=10.0,
-            armature={
-                ".*_Shoulder_.*": 0.01,
-                ".*_Elbow_.*": 0.01,
-            },
         ),
-        "bodies": ImplicitActuatorCfg(
+        "bodies": IdealPDActuatorCfg(
             joint_names_expr=["Waist","AAHead_yaw", "Head_pitch"],
             effort_limit=100.0,
             velocity_limit=100.0,
