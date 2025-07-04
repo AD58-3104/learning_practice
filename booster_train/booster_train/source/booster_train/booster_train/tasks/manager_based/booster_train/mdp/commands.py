@@ -58,18 +58,18 @@ class CurriculumCommandCfg(CommandTermCfg):
     class_type: type = CurriculumCommand
     curriculum_start_step : int = 1000
     curriculum_end_step : int = 7000
-    resampling_time_range = (10.0, 10.0)  # これは必要なので入れる。しかし下のやつと同じにしないとおかしくなるので注意
+    resampling_time_range =(20.0, 20.0)  # これは必要なので入れる。しかし下のやつと同じにしないとおかしくなるので注意
     # 一番最初からstart_stepまで利用するconfig
     init_config : UniformVelocityCommandCfg = UniformVelocityCommandCfg(
                     asset_name="robot",
-                    resampling_time_range=(10.0, 10.0),
+                    resampling_time_range=(20.0, 20.0),
                     rel_standing_envs=0.02,
                     rel_heading_envs=1.0,
                     heading_command=False,
                     heading_control_stiffness=0.5,
                     debug_vis=True,
                     ranges=UniformVelocityCommandCfg.Ranges(
-                        lin_vel_x=(0.0, 0.0), 
+                        lin_vel_x=(0.4, 0.4), 
                         lin_vel_y=(0.0, 0.0), 
                         ang_vel_z=(0.0, 0.0)
                     ))
@@ -81,7 +81,7 @@ class CurriculumCommandCfg(CommandTermCfg):
     # あるだけ。後で消す予定
     target_config : UniformVelocityCommandCfg = UniformVelocityCommandCfg(
                     asset_name="robot",
-                    resampling_time_range=(10.0, 10.0),
+                    resampling_time_range=(20.0, 20.0),
                     rel_standing_envs=0.02,
                     rel_heading_envs=1.0,
                     heading_command=False,

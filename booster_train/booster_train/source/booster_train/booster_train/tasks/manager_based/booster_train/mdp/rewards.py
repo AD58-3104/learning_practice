@@ -113,13 +113,6 @@ def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> t
     # print(swing_leg_index.shape)                #torch.Size([4096])
     # print(stance_leg_index.shape)               #torch.Size([4096])
 
-    # 遊脚がどちらかを判断する
-    # if foot_heights[0] > foot_heights[1]:
-    #     swing_leg_index = 0
-    #     stance_leg_index = 1
-    # else:
-    #     swing_leg_index = 1
-    #     stance_leg_index = 0
 
     # 何かの重み？(論文読んでも説明が無くて意味不明)
     w_phi = 2.0
