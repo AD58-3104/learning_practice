@@ -42,6 +42,29 @@ def pose_regularization(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scen
     reward = kernel_func(torch.norm(foot_angles - nominal_joint_pos,p=2 ,dim=1),sensitivity = 3.0) * env.step_dt
     return reward
 
+global_Cf : torch.tensor = None  # foot_clearance用のCf。初期値は0.05
+global_Cv : torch.tensor = None  # commnd_tracking用のCf。初期値は0.01
+
+# (num_envs,1)を返す
+def getGlobalCf(env,pow : float = 0.995 ,init_value : float = 0.05):
+    global global_Cf
+    if global_Cf is None:
+        global_Cf = torch.full((env.num_envs,1),init_value,device=env.device)
+    else:
+        terminated = env.termination_manager.terminated.unsqueeze(1) # (num_envs,1)に形を合わせる
+        global_Cf = torch.where(terminated,global_Cf ** (pow),global_Cf)
+    return global_Cf
+
+# (num_envs,1)を返す
+def getGlobalCv(env,pow : float = 0.95 ,init_value : float = 0.01):
+    global global_Cv
+    if global_Cv is None:
+        global_Cv = torch.full((env.num_envs,1),init_value,device=env.device)
+    else:
+        terminated = env.termination_manager.terminated.unsqueeze(1)   # (num_envs,1)に形を合わせる
+        global_Cv = torch.where(terminated,global_Cv ** (pow),global_Cv)
+    return global_Cv
+
 # メモ、bVbの方はbase link frameの速度、IVbはinertial reference frameの速度
 def command_tracking(env, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     robot = env.scene[asset_cfg.name]
@@ -51,12 +74,9 @@ def command_tracking(env, command_name: str, asset_cfg: SceneEntityCfg = SceneEn
     ang_vel_error = command[:, 2] - robot.data.root_ang_vel_w[:, 2]
     target = torch.cat([xy_vel_w_err,xy_vel_b_err,ang_vel_error.unsqueeze(1)],dim=1)
     norm = torch.norm(target, p=2, dim=1)
-    Cv = 0.01  
-    if env.common_step_counter > 500: # 最初の500ステップは報酬を0にする
-        Cv += env.common_step_counter / (4800.0)
-    if Cv > 1.0:
-        Cv = 1.0
-    return Cv * kernel_func(norm,sensitivity = 9.0) * env.step_dt
+    Cv = getGlobalCv(env)
+    sum = Cv * (kernel_func(norm,sensitivity = 9.0).unsqueeze(1)) * env.step_dt
+    return sum.squeeze()
 
 def foot_z_distance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     robot = env.scene[asset_cfg.name]
@@ -116,10 +136,8 @@ def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> t
                                     ],dim = 1) # torch.Size([4096, 4])
 
     norm = torch.norm(target,p=2,dim=1)        # torch.Size([4096]) 
-    Cf = 0.05 + env.common_step_counter / (4800.0) 
-    if Cf > 1.0:
-        Cf = 1.0
-    return Cf * kernel_func(norm,sensitivity = 3.0) * env.step_dt
+    sum = getGlobalCf(env) * (kernel_func(norm,sensitivity = 3.0).unsqueeze(1)) * env.step_dt
+    return sum.squeeze()
 
 # 平均に対して早すぎる関節があるときペナルティ
 def velocity_reguralize(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
