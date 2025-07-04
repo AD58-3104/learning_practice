@@ -7,6 +7,7 @@ from isaaclab.envs.mdp import *  # noqa: F401, F403
 from isaaclab.envs import ManagerBasedEnv
 from isaaclab.managers import CommandTermCfg
 from dataclasses import MISSING
+import math
 
 
 
@@ -23,12 +24,22 @@ class CurriculumCommand(UniformVelocityCommand):
         self.curriculum_end_step = cfg.curriculum_end_step
         self.cfg_curriculum = cfg
         self.started = False
+        self.previous_command = torch.zeros(env.num_envs, 3, device=env.device)
+        self.percent_calc = PercentileCalculator(env)
         super().__init__(cfg.init_config,env)
+        # 拡張する
+        self.vel_command_b = torch.zeros(self.num_envs, 6, device=env.device)
     
     def compute(self, dt: float):
         super().compute(dt)
         self.current_time += dt
 
+    # self.command_vel_bは前半の3つがサンプリングされた目標速度、後半の3つが補完された速度
+    def _update_command(self):
+        super()._update_command()
+        percent = self.percent_calc.update()
+        command_inter = (self.vel_command_b[:,3:6] - self.previous_command) * percent + self.previous_command
+        self.vel_command_b[:,[3,4,5]] = command_inter
 
     def _resample(self, env_ids: Sequence[int]):
         current_step  = self.current_time / self.env_dt
@@ -48,7 +59,28 @@ class CurriculumCommand(UniformVelocityCommand):
                 print(percentile)
                 print(val)
                 print(current_ranges)
+        self.previous_command = self.vel_command_b[:,:3] # リサンプリング前に保存する
         super()._resample(env_ids)
+        self.percent_calc.reset(env_ids) #リサンプリングされた環境はリセットする
+        # print(self.vel_command_b[:1,:])
+
+# リサンプリングしてからの長さを計算する
+class PercentileCalculator(object):
+    def __init__(self,env):
+        self.start_step = torch.zeros((env.num_envs,1),device=env.device)
+        self.current_step = 0
+        self.max_episode_length = env.max_episode_length
+        # リサンプリングしてからその速度に達するまでの目標ステップ(それに向けて速度は漸増する)
+        self.target_step = (self.max_episode_length / 3.0) 
+
+    # 目標速度に到達するまでの各環境のパーセンテージを返す
+    def update(self):
+        self.current_step += 1
+        # target_stepまでの割合
+        return torch.clip((self.current_step - self.start_step)  / self.target_step,0,1.0)
+
+    def reset(self,env_ids):
+        self.start_step[env_ids] = self.current_step
 
 
 @configclass
@@ -74,7 +106,7 @@ class CurriculumCommandCfg(CommandTermCfg):
                         ang_vel_z=(0.0, 0.0)
                     ))
     # start_step直後の値
-    start_value : float = 0.0
+    start_value : float = 0.2
     # 目標値
     final_target_value : float = 0.6
 

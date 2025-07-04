@@ -9,9 +9,7 @@ import torch
 from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import ContactSensor
-from isaaclab.utils.math import quat_rotate_inverse, yaw_quat
-
+from isaaclab.envs.mdp import joint_vel
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -115,7 +113,7 @@ def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> t
 
 
     # 何かの重み？(論文読んでも説明が無くて意味不明)
-    w_phi = 2.0
+    w_phi = 5.0
     # 目標の足上げ高さ?(論文読んでも説明が無くて意味不明)
     pz_des = 0.40
     swing_heights = torch.gather(foot_heights,dim=1,index=swing_leg_index.unsqueeze(1))     # torch.Size([4096, 1])
