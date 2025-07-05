@@ -202,7 +202,7 @@ class KickEnvSceneCfg(InteractiveSceneCfg):
                 collision_enabled=True
             ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2,0.0,0.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.34,0.0,0.06)),
     )
 
 
@@ -228,8 +228,8 @@ class CommandsCfg:
 
     # なんか3~10に設定しているはずなのに12とかが引かれるんだが...。
     target_pos = mdp.commands.commands_cfg.UniformPose2dCommandCfg(
-                        ranges=mdp.commands.commands_cfg.UniformPose2dCommandCfg.Ranges((3.0,10.0),
-                                                                                        (3.0,10.0),
+                        ranges=mdp.commands.commands_cfg.UniformPose2dCommandCfg.Ranges((2.0,5.0),
+                                                                                        (2.0,5.0),
                                                                                         (0,0)),
                         simple_heading=True,
                         debug_vis=True,
@@ -343,6 +343,23 @@ class EventCfg:
         },
     )
 
+    reset_ball = EventTerm(
+        func=mdp.reset_root_state_uniform,
+        mode="reset",
+        params={
+            "velocity_range": {"x": (-0.0, 0.0), "y": (-0.0, 0.), "yaw": (0.0, 0.0)},
+            "pose_range": {
+                "x": (0.34, 0.34),
+                "y": (-0.0, 0.0),
+                "z": (0.06, 0.06),
+                "roll": (-0.0, 0.0),
+                "pitch": (-0.0, 0.0),
+                "yaw": (-0.0, 0.0),
+            },
+            "asset_cfg" :  SceneEntityCfg("soccer_ball")
+        },
+    )
+
     # interval
     # これはいらんかなぁ流石に。蹴ってる最中に衝突されて転ばないって厳しいし。
     # push_robot = EventTerm(
@@ -361,23 +378,11 @@ class RewardsCfg:
     alive = RewTerm(func=mdp.is_alive, weight=1.0)
     # (2) Failure penalty
     terminating = RewTerm(func=mdp.is_terminated, weight=-2.0)
-    # (3) Primary task: keep pole upright
-    pole_pos = RewTerm(
-        func=mdp.joint_pos_target_l2,
-        weight=-1.0,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*Knee.*"]), "target": 0.0},
-    )
     # (4) Shaping tasks: lower cart velocity
-    cart_vel = RewTerm(
+    joint_vel = RewTerm(
         func=mdp.joint_vel_l1,
         weight=-0.01,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*Knee.*"])},
-    )
-    # (5) Shaping tasks: lower pole angular velocity
-    pole_vel = RewTerm(
-        func=mdp.joint_vel_l1,
-        weight=-0.005,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*Knee.*"])},
+        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
     )
     ball_command_tracking = RewTerm(func=mdp.ball_command_tracking,weight=10.0)
 
@@ -388,6 +393,8 @@ class TerminationsCfg:
 
     # (1) Time out
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    root_height_below_minimum = DoneTerm(mdp.root_height_below_minimum,params={"minimum_height": 0.6})
+    bad_orientation = DoneTerm(mdp.bad_orientation,params={"limit_angle": 0.6}) # 度くらいを超えたら終わり
 
 ##
 # Environment configuration
@@ -412,7 +419,7 @@ class KickEnvEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         self.decimation = 4
-        self.episode_length_s = 10
+        self.episode_length_s = 6
         # viewer settings
         self.viewer.eye = (8.0, 0.0, 5.0)
         # simulation settings
