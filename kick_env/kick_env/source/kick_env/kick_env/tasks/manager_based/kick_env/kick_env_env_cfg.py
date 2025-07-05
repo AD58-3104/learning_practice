@@ -6,7 +6,7 @@
 import math
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg,RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -19,6 +19,9 @@ from isaaclab.utils import configclass
 from isaaclab.actuators import  IdealPDActuatorCfg
 from isaaclab.sim import UsdFileCfg
 from isaaclab.sensors import ContactSensorCfg,ImuCfg
+from isaaclab.sim.spawners.shapes import spawn_sphere
+from isaaclab.sim.schemas import CollisionPropertiesCfg,MassPropertiesCfg
+
 
 from . import mdp
 
@@ -149,14 +152,59 @@ class KickEnvSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.GroundPlaneCfg(size=(100.0, 100.0)),
     )
 
-    soccer_ball = AssetBaseCfg(
+    # soccer_ball = AssetBaseCfg(
+    #     prim_path="/World/envs/env_.*/SoccerBall",
+    #     init_state=AssetBaseCfg.InitialStateCfg(pos=[0.0, 0.55, 0.0], rot=[1.0, 0.0, 0.0, 0.0]),
+    #     spawn=UsdFileCfg(
+    #         usd_path=f"{PROJECT_HOME_DIR}/Ball.usd",
+    #         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+    #     ),
+    # )
+
+    # soccer_ball = spawn_sphere(
+    #     prim_path="/World/envs/env_.*/SoccerBall",
+    #     cfg=sim_utils.SphereCfg(
+    #         radius=0.11,  # 11cm
+    #         rigid_props=sim_utils.RigidBodyPropertiesCfg(
+    #             rigid_body_enabled=True,
+    #         ),
+    #         mass_props=MassPropertiesCfg(
+    #             mass=0.45,  # 450g
+    #         ),
+    #         visual_material=sim_utils.PreviewSurfaceCfg(
+    #             diffuse_color=(1.0, 1.0, 1.0),
+    #             metallic=0.0,
+    #             roughness=0.7,
+    #         ),
+    #         collision_props=CollisionPropertiesCfg(
+    #             collision_enabled=True
+    #         ),
+    #     ),
+    #     translation=(0.3,0.0,0.0)
+    # )
+
+    soccer_ball: RigidObjectCfg = RigidObjectCfg(
         prim_path="/World/envs/env_.*/SoccerBall",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=[0.0, 0.55, 0.0], rot=[1.0, 0.0, 0.0, 0.0]),
-        spawn=UsdFileCfg(
-            usd_path=f"{PROJECT_HOME_DIR}/Ball.usd",
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        spawn=sim_utils.SphereCfg(
+            radius=0.11,  # 11cm
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                rigid_body_enabled=True,
+            ),
+            mass_props=MassPropertiesCfg(
+                mass=0.45,  # 450g
+            ),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(1.0, 1.0, 1.0),
+                metallic=0.0,
+                roughness=0.7,
+            ),
+            collision_props=CollisionPropertiesCfg(
+                collision_enabled=True
+            ),
         ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.2,0.0,0.0)),
     )
+
 
     # robot
     robot: ArticulationCfg = BOOSTER_T1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
@@ -178,9 +226,10 @@ class KickEnvSceneCfg(InteractiveSceneCfg):
 class CommandsCfg:
     """Command specifications for the MDP."""
 
+    # なんか3~10に設定しているはずなのに12とかが引かれるんだが...。
     target_pos = mdp.commands.commands_cfg.UniformPose2dCommandCfg(
-                        ranges=mdp.commands.commands_cfg.UniformPose2dCommandCfg.Ranges((-1.0,1.0),
-                                                                                        (-1.0,1.0),
+                        ranges=mdp.commands.commands_cfg.UniformPose2dCommandCfg.Ranges((3.0,10.0),
+                                                                                        (3.0,10.0),
                                                                                         (0,0)),
                         simple_heading=True,
                         debug_vis=True,
@@ -192,7 +241,12 @@ class CommandsCfg:
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    joint_effort = mdp.JointEffortActionCfg(asset_name="robot", joint_names=BOOSTER_T1_CFG.actuators["legs"].joint_names_expr , scale=1.0)
+    joint_effort = mdp.JointEffortActionCfg(asset_name="robot", joint_names=[".*Knee.*",
+                                                                             ".*Ankle.*",
+                                                                             ".*Hip.*",
+                                                                             "Waist",
+                                                                             ".*Shoulder.*",
+                                                                             ".*Elbow.*"] , scale=1.0)
 
 
 @configclass
@@ -204,7 +258,7 @@ class ObservationsCfg:
         """Observations for policy group."""
 
         # observation terms (order preserved)
-        velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "target_pos"})
+        target_pos_obs = ObsTerm(func=mdp.generated_commands, params={"command_name": "target_pos"})
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel)
         imu_orientation = ObsTerm(func=mdp.imu_orientation,
@@ -214,8 +268,8 @@ class ObservationsCfg:
                                         params={"asset_cfg": SceneEntityCfg("base_imu")},     #, body_names="Trunk"
                                        )
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel) # これはkinematicsとorientationから計算するらしい。多分stanceの順運動学からやるんだろ
-        root_lin_vel_w = ObsTerm(func=mdp.root_lin_vel_w) # ワールド座標系での速度。これ現実でどうやって取るのか知らん。意味不明
         actions = ObsTerm(func=mdp.last_action)
+        ball_pos = ObsTerm(func=mdp.ball_pos_rel)
 
         def __post_init__(self) -> None:
             self.enable_corruption = False
@@ -277,25 +331,26 @@ class EventCfg:
         func=mdp.reset_root_state_uniform,
         mode="reset",
         params={
-            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
-            "velocity_range": {
-                "x": (-0.5, 0.5),
-                "y": (-0.5, 0.5),
-                "z": (-0.5, 0.5),
-                "roll": (-0.5, 0.5),
-                "pitch": (-0.5, 0.5),
-                "yaw": (-0.5, 0.5),
+            "velocity_range": {"x": (-0.0, 0.0), "y": (-0.0, 0.), "yaw": (0.0, 0.0)},
+            "pose_range": {
+                "x": (0.0, 0.22),
+                "y": (-0.1, 0.1),
+                "z": (0.0, 0.0),
+                "roll": (-0.0, 0.0),
+                "pitch": (-0.0, 0.0),
+                "yaw": (-0.2, 0.2),
             },
         },
     )
 
     # interval
-    push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(10.0, 15.0),
-        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
-    )
+    # これはいらんかなぁ流石に。蹴ってる最中に衝突されて転ばないって厳しいし。
+    # push_robot = EventTerm(
+    #     func=mdp.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(10.0, 15.0),
+    #     params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+    # )
 
 
 @configclass
@@ -324,6 +379,7 @@ class RewardsCfg:
         weight=-0.005,
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*Knee.*"])},
     )
+    ball_command_tracking = RewTerm(func=mdp.ball_command_tracking,weight=10.0)
 
 
 @configclass
