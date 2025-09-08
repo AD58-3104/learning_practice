@@ -46,7 +46,7 @@ class TaskRunner:
         cmd = [
             python_command, 'train.py',
             '--task', base_config.get('task', 'None'),
-            '--num_envs',str(base_config.get('num_envs', 1024))
+            '--num_envs',str(base_config.get('num_envs', 4096))
         ]
         
         # ヘッドレスモード

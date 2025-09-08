@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QLabel, QTextEdit, QPushButton
 )
 from PyQt6.QtCore import Qt
+import json
 
 class CommandBuilderApp(QWidget):
     """
@@ -53,8 +54,9 @@ class CommandBuilderApp(QWidget):
         left_panel_layout.addWidget(QLabel('📋 ファイル/ディレクトリ一覧 (クリックしてコピー/プレビュー):'))
         self.file_list_widget = QListWidget()
         # self.file_list_widget.itemClicked.connect(self.copy_to_clipboard)
-        self.file_list_widget.currentItemChanged.connect(self.copy_to_clipboard)
         self.file_list_widget.currentItemChanged.connect(self.display_file_content)
+        # self.file_list_widget.currentItemChanged.connect(self.copy_to_clipboard)
+        self.current_joint_params = {}
         left_panel_layout.addWidget(self.file_list_widget)
 
         self.exec_button = QPushButton("Execute")
@@ -108,7 +110,7 @@ class CommandBuilderApp(QWidget):
         else:
             self.file_list_widget.addItem("有効なディレクトリではありません。")
 
-    def copy_to_clipboard(self, item: QListWidgetItem):
+    def copy_to_clipboard(self, item: QListWidgetItem, previous_item: QListWidgetItem):
         if not item:
             return
         display_text = item.text()
@@ -121,11 +123,28 @@ class CommandBuilderApp(QWidget):
         dir_path = self.dir_path_edit.text()
         command_template = self.command_template_edit.text()
         full_path = os.path.join(dir_path, clicked_item_text)
-        final_string = command_template + full_path.replace('\\', '/')
+        final_string = command_template + full_path.replace('\\', '/') + " " + self.get_joint_parameter_strings()
         clipboard = QApplication.clipboard()
         clipboard.setText(final_string)
         self.command_preview_line_edit.setText(final_string)
         print(f"クリップボードにコピーしました: {final_string}")
+
+
+    def get_joint_parameter_strings(self) -> str:
+        result_str = ""
+        torques = self.current_joint_params.get('joint_torques',[])
+        torque_str = str(torques).replace(' ', '')  # スペースを除去
+        result_str =  result_str + " " + (f'env.events.change_joint_torque.params.joint_torque={torque_str}')
+        print(torque_str)
+
+        # ジョイント名設定
+        names = self.current_joint_params.get('joint_names',[])
+        names_str = str(names).replace(' ', '')  # スペースを除去
+        names_str = names_str.replace("'", '"')
+        result_str = result_str + " " + (f"'env.events.change_joint_torque.params.asset_cfg.joint_names={names_str}'")
+        print(names_str)
+        # ↑なんかこれシングルクオートで囲って、]はエスケープしない。文字列は""で囲むでいけた。よくわからん。
+        return result_str
 
     def display_file_content(self, current_item: QListWidgetItem, previous_item: QListWidgetItem):
         """
@@ -170,6 +189,7 @@ class CommandBuilderApp(QWidget):
             try:
                 with open(preview_target_path, 'r', encoding='utf-8') as f:
                     content = f.read()
+                    self.current_joint_params = json.loads(content)
                 self.preview_text_edit.setText(content)
                 print(f"Debug content {preview_target_path}")
             except UnicodeDecodeError:
@@ -178,6 +198,8 @@ class CommandBuilderApp(QWidget):
                 self.preview_text_edit.setText(f"ファイル読み込みエラー:\n{e}")
         else:
             self.preview_text_edit.setText(f"ファイルが見つかりません:\n{preview_target_path}")
+        
+        self.copy_to_clipboard(current_item, previous_item)
 
     def execute_current_command(self):
         command = "gnome-terminal -- " + self.command_preview_line_edit.text()
