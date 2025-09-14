@@ -32,22 +32,26 @@ class SettingLogger():
 LOG_DATA_NAMES = [
     "torques",
     "velocities",
+    "max_torques",
 ]
+TMP_LOG_FILE = "exp_logdata/tmp_log.csv"
 
 def get_logfile_name(file_name,data_name):
     name, ext = file_name.rsplit('.', 1)
     return f"{name}_{data_name}.{ext}"
 
 class ExperimentValueLogger:
-    def __init__(self,finish_step: int, log_file_name: str = 'exp_logdata/log.csv', target_envs: list = None ):
+    def __init__(self,finish_step: int, log_file_name: str = TMP_LOG_FILE, target_envs: list = None ):
         self.finish_step = finish_step
         self.step_count = 0
         self.log_file_name = log_file_name
         self.log_files = {}
+        self.file_names = []
         self.finish_full_episode = 0
         self.episode_count = 1  # 最初は1から始める
         for data_name in LOG_DATA_NAMES:
             filename = get_logfile_name(log_file_name, data_name)
+            self.file_names.append(filename)
             self.log_files[data_name] = open(filename, 'w')
             print(f"[Exp Data Logger] Open logfile {filename}")
 
@@ -58,6 +62,7 @@ class ExperimentValueLogger:
 
     def log(self, env: ManagerBasedRLEnv) -> bool:
         self.step_count += 1
+        self.write_max_torque_data(env)
         self.write_torque_data(env)
         self.write_velocity_data(env)
         self.log_success_rate(env)
@@ -73,12 +78,28 @@ class ExperimentValueLogger:
         joint_names = robot.data.joint_names
         return ','.join(joint_names)
 
+    """
+    各関節に対して全ての環境の最大トルクを記録する。
+    """
+    def write_max_torque_data(self,env: ManagerBasedRLEnv):
+        if self.step_count == 1:
+            joint_name_str = self.get_joint_name_str(env)
+            self.log_files["max_torques"].write(joint_name_str + '\n')
+        robot = env.scene["robot"]
+        torques = robot.data.applied_torque[self.target_envs]
+        abs_max_indices = torch.argmax(torch.abs(torques), dim=0)
+        torques = torch.gather(torques, 0, abs_max_indices.unsqueeze(0)).squeeze(0)
+        flaten = torques.flatten()
+        val_str = ','.join(map(str,flaten.tolist()))
+        self.log_files["max_torques"].write(val_str + '\n')
+
     def write_torque_data(self,env: ManagerBasedRLEnv):
         if self.step_count == 1:
             joint_name_str = self.get_joint_name_str(env)
             self.log_files["torques"].write(joint_name_str + '\n')
         robot = env.scene["robot"]
-        torques = robot.data.applied_torque[self.target_envs]
+        torques = torch.sum(robot.data.applied_torque[self.target_envs], dim=0, keepdim=True)
+        torques = torques / len(self.target_envs)
         flaten = torques.flatten()
         val_str = ','.join(map(str,flaten.tolist()))
         self.log_files["torques"].write(val_str + '\n')
@@ -88,7 +109,8 @@ class ExperimentValueLogger:
             joint_name_str = self.get_joint_name_str(env)
             self.log_files["velocities"].write(joint_name_str + '\n')
         robot = env.scene["robot"]
-        velocities = robot.data.joint_vel[self.target_envs]
+        velocities = torch.sum(robot.data.joint_vel[self.target_envs], dim=0, keepdim=True)
+        velocities = velocities / len(self.target_envs)
         flaten = velocities.flatten()
         val_str = ','.join(map(str,flaten.tolist()))
         self.log_files["velocities"].write(val_str + '\n')
@@ -116,6 +138,10 @@ class ExperimentValueLogger:
     def _finish_logging(self):
         for f in self.log_files.values():
             f.close()
+        import shutil
+        import os
+        for name in self.file_names:
+            shutil.copyfile(name, os.path.join("exp_logdata", os.path.basename(name)))
         self.print_success_rate()
         print(f"[Exp Data Logger] Step {self.step_count} reached.")
         print("[Exp Data Logger] Logging finished.")

@@ -178,7 +178,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     obs, _ = env.reset()
     timestep = 0
     import logger
-    exp_val_logger = logger.ExperimentValueLogger(finish_step=3000)
+    target_envs = torch.arange(1,env.num_envs)  # 全ての環境のデータの平均値を取る
+    exp_val_logger = logger.ExperimentValueLogger(finish_step=3000, log_file_name=os.path.join(log_dir, "play_log.csv"), target_envs=target_envs)
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
