@@ -34,7 +34,7 @@ class CommandBuilderApp(QWidget):
         # 1. ディレクトリパス入力
         left_panel_layout.addWidget(QLabel('📂 相対パス (Relative Path):'))
         self.dir_path_edit = QLineEdit()
-        self.dir_path_edit.setText('./logs/skrl/h1_flat/joint_experiment')
+        self.dir_path_edit.setText('./logs/skrl/h1_flat/joint_experiment_improve')
         self.dir_path_edit.textChanged.connect(self.update_directory_list)
         left_panel_layout.addWidget(self.dir_path_edit)
 
@@ -47,7 +47,7 @@ class CommandBuilderApp(QWidget):
         # 3. ★追加: プレビュー用ファイル名入力
         left_panel_layout.addWidget(QLabel('📄 プレビューファイル名 (Preview File in Dir):'))
         self.preview_file_edit = QLineEdit()
-        self.preview_file_edit.setText('joint_cfg.json など (フォルダ選択時に使用)')
+        self.preview_file_edit.setText('joint_cfg.json')
         left_panel_layout.addWidget(self.preview_file_edit)
 
         # 4. ファイル/ディレクトリ一覧
@@ -91,8 +91,16 @@ class CommandBuilderApp(QWidget):
         checkbox_widget.setLayout(checkbox_layout)
         right_panel_layout.addWidget(checkbox_widget)
 
+        # 追加引数入力用のラベルとLineEdit
+        right_panel_layout.addWidget(QLabel('🔧 追加引数 (Additional Arguments):'))
+        self.additional_args_edit = QLineEdit()
+        self.additional_args_edit.setPlaceholderText("例: --param1 value1 --param2 value2")
+        self.additional_args_edit.textChanged.connect(self.on_additional_args_changed)
+        right_panel_layout.addWidget(self.additional_args_edit)
+
+        # コマンドプレビュー表示用
+        right_panel_layout.addWidget(QLabel('📋 コマンドプレビュー:'))
         self.command_preview_line_edit = QLineEdit()
-        self.command_preview_line_edit.setReadOnly(True)
         right_panel_layout.addWidget(self.command_preview_line_edit)
 
         # 右側ウィジェット
@@ -132,6 +140,12 @@ class CommandBuilderApp(QWidget):
         if current_item:
             self.copy_to_clipboard(current_item, None)
 
+    def on_additional_args_changed(self, text):
+        """追加引数が変更されたときの処理"""
+        current_item = self.file_list_widget.currentItem()
+        if current_item:
+            self.copy_to_clipboard(current_item, None)
+
     def copy_to_clipboard(self, item: QListWidgetItem, previous_item: QListWidgetItem):
         if not item:
             return
@@ -154,6 +168,11 @@ class CommandBuilderApp(QWidget):
         # ヘッドレスモードオプションを追加
         if self.headless_checkbox.isChecked():
             final_string += " --headless"
+
+        # ユーザーが入力した追加引数を追加
+        additional_args = self.additional_args_edit.text().strip()
+        if additional_args:
+            final_string += " " + additional_args
 
         clipboard = QApplication.clipboard()
         clipboard.setText(final_string)
@@ -234,7 +253,10 @@ class CommandBuilderApp(QWidget):
 
     def execute_current_command(self):
         command = "gnome-terminal -- " + self.command_preview_line_edit.text()
-        print(f"Execute command:: {command}")
+        import datetime
+        currnet_time = datetime.datetime.now()
+        print(f"Execute command [{currnet_time}]: ")
+        print(f"{command}")
         subprocess.run(command,shell=True)
 
 def main():
