@@ -5,7 +5,7 @@ import os
 import subprocess
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QListWidget,
-    QListWidgetItem, QLabel, QTextEdit, QPushButton
+    QListWidgetItem, QLabel, QTextEdit, QPushButton, QCheckBox
 )
 from PyQt6.QtCore import Qt
 import json
@@ -76,6 +76,21 @@ class CommandBuilderApp(QWidget):
         self.preview_text_edit.setPlaceholderText("左のリストからファイルをクリックすると、ここに内容が表示されます。")
         right_panel_layout.addWidget(self.preview_text_edit)
 
+        # ビデオ撮影とヘッドレスモードのチェックボックスを横並びに配置
+        checkbox_layout = QHBoxLayout()
+        
+        self.record_video_checkbox = QCheckBox("🎥 ビデオを撮影する (Record Video)")
+        self.record_video_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        checkbox_layout.addWidget(self.record_video_checkbox)
+        
+        self.headless_checkbox = QCheckBox("🖥️ ヘッドレスモード (Headless)")
+        self.headless_checkbox.stateChanged.connect(self.on_checkbox_changed)
+        checkbox_layout.addWidget(self.headless_checkbox)
+        
+        checkbox_widget = QWidget()
+        checkbox_widget.setLayout(checkbox_layout)
+        right_panel_layout.addWidget(checkbox_widget)
+
         self.command_preview_line_edit = QLineEdit()
         self.command_preview_line_edit.setReadOnly(True)
         right_panel_layout.addWidget(self.command_preview_line_edit)
@@ -110,6 +125,13 @@ class CommandBuilderApp(QWidget):
         else:
             self.file_list_widget.addItem("有効なディレクトリではありません。")
 
+    def on_checkbox_changed(self, state):
+        """チェックボックスの状態変更時の処理"""
+        # 現在選択されているアイテムで再度コマンドを更新
+        current_item = self.file_list_widget.currentItem()
+        if current_item:
+            self.copy_to_clipboard(current_item, None)
+
     def copy_to_clipboard(self, item: QListWidgetItem, previous_item: QListWidgetItem):
         if not item:
             return
@@ -124,6 +146,15 @@ class CommandBuilderApp(QWidget):
         command_template = self.command_template_edit.text()
         full_path = os.path.join(dir_path, clicked_item_text)
         final_string = command_template + full_path.replace('\\', '/') + " " + self.get_joint_parameter_strings()
+        
+        # ビデオ撮影オプションを追加
+        if self.record_video_checkbox.isChecked():
+            final_string += " --video --video_length 1000"
+        
+        # ヘッドレスモードオプションを追加
+        if self.headless_checkbox.isChecked():
+            final_string += " --headless"
+
         clipboard = QApplication.clipboard()
         clipboard.setText(final_string)
         self.command_preview_line_edit.setText(final_string)
