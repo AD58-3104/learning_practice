@@ -1,0 +1,3 @@
+
+コマンドは以下の通り、skrlディレクトリで実行する
+uv tool run --python 3.12 tensorboard --logdir logs --port 3390 --host 0.0.0.0

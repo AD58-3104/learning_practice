@@ -4,6 +4,8 @@ import torch
 from typing import TYPE_CHECKING
 
 from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.utils.math import quat_rotate_inverse, yaw_quat
+import torch.nn.functional as F
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -17,11 +19,13 @@ class SettingLogger():
 
     def log_setting(self,filepath):
         joint_cfg = self.env_cfg.events.change_joint_torque
-        data = {
-            "joint_names": joint_cfg.params["asset_cfg"].joint_names,
-            "joint_torques": joint_cfg.params["joint_torque"]
-        }
-        self.write_to_json(data,filepath)
+        # joint_cfg はNoneになる可能性がある(イベントをoffにする場合など)
+        if joint_cfg is not None:
+            data = {
+                "joint_names": joint_cfg.params["asset_cfg"].joint_names,
+                "joint_torques": joint_cfg.params["joint_torque"]
+            }
+            self.write_to_json(data,filepath)
 
     def write_to_json(self,data:dict,filepath):
         with open(filepath,'w',encoding='utf-8') as f:
@@ -33,6 +37,7 @@ LOG_DATA_NAMES = [
     "torques",
     "velocities",
     "max_torques",
+    "velocity_tracking_rate",
 ]
 TMP_LOG_FILE = "exp_logdata/tmp_log.csv"
 
@@ -65,6 +70,7 @@ class ExperimentValueLogger:
         self.write_max_torque_data(env)
         self.write_torque_data(env)
         self.write_velocity_data(env)
+        self.write_velocity_tracking_rate(env)
         self.log_success_rate(env)
         if self.step_count >= self.finish_step:
             self._finish_logging()
@@ -114,6 +120,32 @@ class ExperimentValueLogger:
         flaten = velocities.flatten()
         val_str = ','.join(map(str,flaten.tolist()))
         self.log_files["velocities"].write(val_str + '\n')
+
+    # expカーネルでの速度追従率を計算する。誤差が最小の場合1.0
+    def track_rate_lin_vel_xy_yaw_frame(self,env: ManagerBasedRLEnv) -> torch.Tensor:
+        command_name = "base_velocity"
+        asset = env.scene["robot"]
+        vel_yaw = quat_rotate_inverse(yaw_quat(asset.data.root_quat_w), asset.data.root_lin_vel_w[:, :3])
+        # lin_vel_direction_error = F.cosine_similarity(env.command_manager.get_command(command_name)[:, :2],vel_yaw[:, :2],dim=1)
+        lin_vel_magnitude_error_avg = torch.sum(torch.norm(vel_yaw[:, :2] - env.command_manager.get_command(command_name)[:, :2],dim=1)) / env.num_envs
+        return torch.exp(-lin_vel_magnitude_error_avg / 1.0 ) 
+
+    # 角速度の追従率を計算する。誤差が最小の場合1.0
+    def track_rate_ang_vel_z_world(self,env: ManagerBasedRLEnv) -> torch.Tensor:
+        command_name = "base_velocity"
+        asset = env.scene["robot"]
+        ang_vel_magnitude_error_avg = torch.sum(torch.square((asset.data.root_ang_vel_w[:, 2]) - (env.command_manager.get_command(command_name)[:, 2]))) / env.num_envs
+        # 方向誤差はまあ計算しなくても良いことにする。多分真逆に進むという事は無いので。
+        return torch.exp(-ang_vel_magnitude_error_avg / 1.0 )
+
+    def write_velocity_tracking_rate(self,env: ManagerBasedRLEnv):
+        if self.step_count == 1:
+            joint_name_str = "lin_vel_xy_yaw,ang_vel_z_world"
+            self.log_files["velocity_tracking_rate"].write(joint_name_str + '\n')
+        lin_vel_error = self.track_rate_lin_vel_xy_yaw_frame(env)
+        ang_vel_error = self.track_rate_ang_vel_z_world(env)
+        val_str = ','.join(map(str,[lin_vel_error.item(), ang_vel_error.item()]))
+        self.log_files["velocity_tracking_rate"].write(val_str + '\n')
 
     def log_success_rate(self,env: ManagerBasedRLEnv):
         terminated = env.termination_manager.terminated[0]

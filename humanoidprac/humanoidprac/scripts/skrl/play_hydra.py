@@ -46,6 +46,7 @@ parser.add_argument(
     help="The RL algorithm used for training the skrl agent.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument("--finish_step",type=int,default=3000,help="終了ステップ数")
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -179,7 +180,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     timestep = 0
     import logger
     target_envs = torch.arange(1,env.num_envs)  # 全ての環境のデータの平均値を取る
-    exp_val_logger = logger.ExperimentValueLogger(finish_step=3000, log_file_name=os.path.join(log_dir, "play_log.csv"), target_envs=target_envs)
+    if args_cli.finish_step:
+        finish_step = args_cli.finish_step
+    # デフォルト値は上のadd_argumentで3000にしている.
+    exp_val_logger = logger.ExperimentValueLogger(finish_step=finish_step, log_file_name=os.path.join(log_dir, "play_log.csv"), target_envs=target_envs)
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
