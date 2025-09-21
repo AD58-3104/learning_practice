@@ -142,18 +142,78 @@ experiments:
     - joint_torque: [300.0]
       joint_names: ["right_ankle"]
   exp2:
+    - joint_torque: [50.0]
+      joint_names: ["left_hip_yaw"]
+    - joint_torque: [50.0]
+      joint_names: ["left_hip_roll"]
+    - joint_torque: [50.0]
+      joint_names: ["left_hip_pitch"]
+    - joint_torque: [50.0]
+      joint_names: ["left_knee"]
+    - joint_torque: [50.0]
+      joint_names: ["left_ankle"]
+    - joint_torque: [100.0]
+      joint_names: ["left_hip_yaw"]
+    - joint_torque: [100.0]
+      joint_names: ["left_hip_roll"]
+    - joint_torque: [100.0]
+      joint_names: ["left_hip_pitch"]
+    - joint_torque: [100.0]
+      joint_names: ["left_knee"]
+    - joint_torque: [100.0]
+      joint_names: ["left_ankle"]
+    - joint_torque: [150.0]
+      joint_names: ["left_hip_yaw"]
+    - joint_torque: [150.0]
+      joint_names: ["left_hip_roll"]
+    - joint_torque: [150.0]
+      joint_names: ["left_hip_pitch"]
+    - joint_torque: [150.0]
+      joint_names: ["left_knee"]
+    - joint_torque: [150.0]
+      joint_names: ["left_ankle"]
+    - joint_torque: [200.0]
+      joint_names: ["left_hip_yaw"]
+    - joint_torque: [200.0]
+      joint_names: ["left_hip_roll"]
+    - joint_torque: [200.0]
+      joint_names: ["left_hip_pitch"]
+    - joint_torque: [200.0]
+      joint_names: ["left_knee"]
+    - joint_torque: [200.0]
+      joint_names: ["left_ankle"]
+    - joint_torque: [250.0]
+      joint_names: ["left_hip_yaw"]
+    - joint_torque: [250.0]
+      joint_names: ["left_hip_roll"]
+    - joint_torque: [250.0]
+      joint_names: ["left_hip_pitch"]
+    - joint_torque: [250.0]
+      joint_names: ["left_knee"]
+    - joint_torque: [250.0]
+      joint_names: ["left_ankle"]
     - joint_torque: [300.0]
-      joint_names: ["right_ankle"]
+      joint_names: ["left_hip_yaw"]
+    - joint_torque: [300.0]
+      joint_names: ["left_hip_roll"]
+    - joint_torque: [300.0]
+      joint_names: ["left_hip_pitch"]
+    - joint_torque: [300.0]
+      joint_names: ["left_knee"]
+    - joint_torque: [300.0]
+      joint_names: ["left_ankle"]
+    - joint_torque: [360.0]
+      joint_names: ["left_ankle"]   # 正常なやつ
 
 
 # 基本設定（必要に応じて調整）
 base_config:
   task: "Humanoidprac-v0-train"
   headless: true
-  directory: "h1_flat/joint_experiment"
+  directory: "h1_flat/joint_experiment_ver3"
   python_command: "/home/satoshi/learning_practice/IsaacLab/./isaaclab.sh -p"
-  num_envs: 1024
-  exp_select: "exp1"
+  num_envs: 4096
+  exp_select: "exp2"
 
 
 # ジョイントリスト
