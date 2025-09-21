@@ -168,6 +168,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg["trainer"]["close_environment_at_exit"] = False
     agent_cfg["agent"]["experiment"]["write_interval"] = 0  # don't log to TensorBoard
     agent_cfg["agent"]["experiment"]["checkpoint_interval"] = 0  # don't generate checkpoints
+    import logger
+    joint_cfg_logger = logger.SettingLogger(env_cfg)
+    joint_cfg_logger.log_setting(os.path.join(log_dir, "play_joint_cfg.json"))
+
     runner = Runner(env, agent_cfg)
 
     print(f"[INFO] Loading model checkpoint from: {resume_path}")
@@ -178,7 +182,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     obs, _ = env.reset()
     timestep = 0
-    import logger
     target_envs = torch.arange(1,env.num_envs)  # 全ての環境のデータの平均値を取る
     if args_cli.finish_step:
         finish_step = args_cli.finish_step

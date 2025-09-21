@@ -236,10 +236,13 @@ class CommandBuilderApp(QWidget):
 
         # ファイル内容を読み込んで表示
         if os.path.isfile(preview_target_path):
+            ext = os.path.splitext(preview_target_path)[1].lower()
             try:
                 with open(preview_target_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                    self.current_joint_params = json.loads(content)
+                    # JSONファイルならパースしてcurrent_joint_paramsに保存
+                    if ext in [".json"]:
+                        self.current_joint_params = json.loads(content)
                 self.preview_text_edit.setText(content)
                 print(f"Debug content {preview_target_path}")
             except UnicodeDecodeError:
