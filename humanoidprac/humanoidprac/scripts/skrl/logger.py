@@ -38,6 +38,7 @@ LOG_DATA_NAMES = [
     "velocities",
     "max_torques",
     "velocity_tracking_rate",
+    "success_rate",
 ]
 TMP_LOG_FILE = "exp_logdata/tmp_log.csv"
 
@@ -46,6 +47,7 @@ def get_logfile_name(file_name,data_name):
     return f"{name}_{data_name}.{ext}"
 
 class ExperimentValueLogger:
+    # log_file_nameには保存する基本ディレクトリの絶対パスを含めた基本名が入る
     def __init__(self,finish_step: int, log_file_name: str = TMP_LOG_FILE, target_envs: list = None ):
         self.finish_step = finish_step
         self.step_count = 0
@@ -54,6 +56,8 @@ class ExperimentValueLogger:
         self.file_names = []
         self.finish_full_episode = 0
         self.episode_count = 1  # 最初は1から始める
+        import os
+        self.log_dir_name = os.path.dirname(log_file_name)
         for data_name in LOG_DATA_NAMES:
             filename = get_logfile_name(log_file_name, data_name)
             self.file_names.append(filename)
@@ -148,32 +152,29 @@ class ExperimentValueLogger:
         self.log_files["velocity_tracking_rate"].write(val_str + '\n')
 
     def log_success_rate(self,env: ManagerBasedRLEnv):
-        terminated = env.termination_manager.terminated[0]
-        timeout = env.termination_manager.time_outs[0]
-        if terminated or timeout:
-            if timeout:
-                self.finish_full_episode += 1
-            self.episode_count += 1
+        terminated = torch.sum(env.termination_manager.terminated.int())
+        timeout = torch.sum(env.termination_manager.time_outs.int())
+        self.episode_count += terminated + timeout
+        self.finish_full_episode += timeout
         return
 
     def print_success_rate(self):
+        self.log_files["success_rate"].write(f"Total episodes,Total success episodes, Success rate[%]\n")
         if self.episode_count > 0:
-            success_rate = float(self.finish_full_episode) / float(self.episode_count)
-            with open("exp_logdata/success_rate.txt", "a") as f:
-                f.write(f"Success rate: {success_rate:.2f}\n")
+            success_rate = float(self.finish_full_episode) / float(self.episode_count) * 100.0
+            self.log_files["success_rate"].write(f"{self.episode_count},{self.finish_full_episode},{success_rate:.2f}\n")
             print(f"[Exp Data Logger] Success rate: {success_rate:.2f}")
         else:
-            with open("exp_logdata/success_rate.txt", "a") as f:
-                f.write("No episodes completed.\n")
+            self.log_files["success_rate"].write("No episodes completed.\n")
             print("[Exp Data Logger] No episodes completed.")
 
     def _finish_logging(self):
+        self.print_success_rate()
         for f in self.log_files.values():
             f.close()
         import shutil
         import os
         for name in self.file_names:
             shutil.copyfile(name, os.path.join("exp_logdata", os.path.basename(name)))
-        self.print_success_rate()
         print(f"[Exp Data Logger] Step {self.step_count} reached.")
         print("[Exp Data Logger] Logging finished.")
