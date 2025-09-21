@@ -1,0 +1,8 @@
+{
+  "joint_names": [
+    "left_hip_yaw"
+  ],
+  "joint_torques": [
+    200.0
+  ]
+}
