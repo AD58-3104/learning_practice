@@ -13,6 +13,7 @@ This version supports overriding env.events parameters through command line argu
 
 import argparse
 import sys
+import ast
 
 from isaaclab.app import AppLauncher
 
@@ -47,7 +48,7 @@ parser.add_argument(
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--finish_step",type=int,default=3000,help="終了ステップ数")
-
+parser.add_argument("--joint_cfg",type=str,default="",help="上書きするjointの設定を辞書形式で指定する. 例: '{\"left_knee_joint\": 150}'")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments - split between argparse and hydra args
@@ -111,7 +112,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
     env_cfg.sim.use_fabric = not args_cli.disable_fabric
-    
+
+    # jointの設定を上書きする
+    if args_cli.joint_cfg:
+        param = ast.literal_eval(args_cli.joint_cfg)
+        print(f"[INFO] Overriding joint configuration : {env_cfg.scene.robot.actuators['legs'].effort_limit}")
+        for joint_name, torque in param.items():
+            env_cfg.scene.robot.actuators["legs"].effort_limit[joint_name] = torque
+            print(f"[INFO] Overriding joint configuration with: {joint_name} -> {torque}Nm")
+
     # configure the ML framework into the global skrl variable
     if args_cli.ml_framework.startswith("jax"):
         skrl.config.jax.backend = "jax" if args_cli.ml_framework == "jax" else "numpy"

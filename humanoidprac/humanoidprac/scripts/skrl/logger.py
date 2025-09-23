@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 import json
+import time
 
 class SettingLogger():
     def __init__(self,env_cfg:ManagerBasedRLEnvCfg):
@@ -68,6 +69,7 @@ class ExperimentValueLogger:
             self.target_envs = [0]  # 特に指定が無いなら、1つの環境だけを対象にする
         else:
             self.target_envs = target_envs
+        self.start_time = time.perf_counter()
 
     def log(self, env: ManagerBasedRLEnv) -> bool:
         self.step_count += 1
@@ -80,7 +82,11 @@ class ExperimentValueLogger:
             self._finish_logging()
             return True
         if self.step_count % 500 == 0:
-            print(f"[Exp Data Logger] Step {self.step_count} logged.")
+            elapsed = time.perf_counter() - self.start_time
+            step_per_sec = 500.0 / elapsed
+            print(f"Dir [{self.log_dir_name}]")
+            print(f"[Exp Data Logger] Step {self.step_count} logged. {step_per_sec:.4f} [step/sec]")
+            self.start_time = time.perf_counter()
         return False
 
     def get_joint_name_str(self,env: ManagerBasedRLEnv):

@@ -14,6 +14,7 @@ a more user-friendly way.
 
 import argparse
 import sys
+import ast
 
 from isaaclab.app import AppLauncher
 
@@ -44,6 +45,7 @@ parser.add_argument(
     choices=["AMP", "PPO", "IPPO", "MAPPO"],
     help="The RL algorithm used for training the skrl agent.",
 )
+parser.add_argument("--joint_cfg",type=str,default="",help="上書きするjointの設定を辞書形式で指定する. 例: '{\"left_knee_joint\": 150}'")
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -114,6 +116,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+
+    # jointの設定を上書きする
+    if args_cli.joint_cfg:
+        param = ast.literal_eval(args_cli.joint_cfg)
+        print(f"[INFO] Overriding joint configuration : {env_cfg.scene.robot.actuators['legs'].effort_limit}")
+        for joint_name, torque in param.items():
+            env_cfg.scene.robot.actuators["legs"].effort_limit[joint_name] = torque
+            print(f"[INFO] Overriding joint configuration with: {joint_name} -> {torque}Nm")
 
     # multi-gpu training config
     if args_cli.distributed:
