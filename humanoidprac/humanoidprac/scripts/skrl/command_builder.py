@@ -34,7 +34,7 @@ class CommandBuilderApp(QWidget):
         # 1. ディレクトリパス入力
         left_panel_layout.addWidget(QLabel('📂 相対パス (Relative Path):'))
         self.dir_path_edit = QLineEdit()
-        self.dir_path_edit.setText('./logs/skrl/h1_flat/joint_experiment_improve')
+        self.dir_path_edit.setText('./logs/skrl/h1_flat/joint_experiment_ver3')
         self.dir_path_edit.textChanged.connect(self.update_directory_list)
         left_panel_layout.addWidget(self.dir_path_edit)
 
@@ -194,6 +194,14 @@ class CommandBuilderApp(QWidget):
         result_str = result_str + " " + (f"'env.events.change_joint_torque.params.asset_cfg.joint_names={names_str}'")
         print(names_str)
         # ↑なんかこれシングルクオートで囲って、]はエスケープしない。文字列は""で囲むでいけた。よくわからん。
+        
+        # ImplicitActuator側でのeffort_limitの設定
+        effort_limit_str = "--joint_cfg '{"
+        for joint_name, torque in zip(names, torques):
+            effort_limit_str += f'"{joint_name}":{torque}, '
+        effort_limit_str = effort_limit_str.rstrip(", ") + "}'"
+        result_str = result_str + " " + effort_limit_str
+        print(effort_limit_str)
         return result_str
 
     def display_file_content(self, current_item: QListWidgetItem, previous_item: QListWidgetItem):
