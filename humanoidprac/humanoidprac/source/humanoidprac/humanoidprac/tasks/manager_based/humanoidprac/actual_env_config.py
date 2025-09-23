@@ -78,7 +78,19 @@ class H1RoughEnvCfg(HumanoidpracEnvCfg):
         self.scene.robot = H1_MINIMAL_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         if self.scene.height_scanner:
             self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/torso_link"
-
+        
+        # ここで各joint1つ1つにlimitを設定するように書き換えておく。
+        self.scene.robot.actuators["legs"].effort_limit = {
+                "right_hip_yaw" : 300.0,     # minimalの方は、_jointが付かないらしい。
+                "left_hip_yaw" : 300.0,
+                "right_hip_roll" : 300.0,
+                "left_hip_roll" : 300.0,
+                "right_hip_pitch" : 300.0,
+                "left_hip_pitch" : 300.0,
+                "right_knee" : 300.0,
+                "left_knee" : 300.0,
+                "torso" : 300.0,
+        }
         # Randomization
         self.events.push_robot = None
         self.events.add_base_mass = None
