@@ -33,7 +33,26 @@ from . import mdp
 
 from isaaclab_assets import G1_MINIMAL_CFG  # isort: skip
 from isaaclab.terrains.config.rough import ROUGH_TERRAINS_CFG  # isort: skip
+from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
+import isaaclab.terrains as terrain_gen
 
+
+# 段差は無い不整地
+TERRAIN_CFG = TerrainGeneratorCfg(
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_rows=10,
+    num_cols=20,
+    horizontal_scale=0.05,
+    vertical_scale=0.002,
+    slope_threshold=0.75,
+    use_cache=False,
+    sub_terrains={
+        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=1.0, noise_range=(0.02, 0.10), noise_step=0.02, border_width=0.125
+        ),
+    },
+)
 
 ##
 # Scene definition
@@ -47,7 +66,7 @@ class HumanoidpracSceneCfg(InteractiveSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
-        terrain_generator=ROUGH_TERRAINS_CFG,
+        terrain_generator=TERRAIN_CFG,
         max_init_terrain_level=5,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(

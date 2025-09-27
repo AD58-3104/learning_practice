@@ -145,10 +145,10 @@ class H1RoughEnvCfg_PLAY(H1RoughEnvCfg):
             self.scene.terrain.terrain_generator.num_cols = 5
             self.scene.terrain.terrain_generator.curriculum = False
 
-        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
-        self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
-        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
+        # no height scan ポリシーのサイズが違うのでエラーになるので消す。
+        self.scene.height_scanner = None
+        self.observations.policy.height_scan = None
+
         # disable randomization for play
         self.observations.policy.enable_corruption = False
         # remove random pushing
@@ -186,3 +186,26 @@ class H1FlatEnvCfg_PLAY(H1FlatEnvCfg):
         # remove random pushing
         self.events.base_external_force_torque = None
         self.events.push_robot = None
+
+
+@configclass
+class H1FlatEnvCfg_PushExperiment(H1FlatEnvCfg):
+    def __post_init__(self) -> None:
+        # post init of parent
+        super().__post_init__()
+
+        # make a smaller scene for play
+        self.scene.num_envs = 50
+        self.scene.env_spacing = 2.5
+        # disable randomization for play
+        self.observations.policy.enable_corruption = False
+        
+        # pushの設定
+        # 学習時の設定はオフになっている。
+        from isaaclab.managers import EventTermCfg as EventTerm
+        self.events.push_robot = EventTerm(
+            func=mdp.push_by_setting_velocity,
+            mode="interval",
+            interval_range_s=(10.0, 15.0),
+            params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+        )
