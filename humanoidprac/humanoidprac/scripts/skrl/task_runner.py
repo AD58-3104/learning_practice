@@ -199,10 +199,11 @@ def main():
     
     if args.dry_run:
         # ドライランモード: コマンドのみ表示
-        experiments = runner.config.get('experiments', [])
+        select_exp = runner.config.get('base_config', {}).get('exp_select',"exp1")
+        experiments = runner.config.get('experiments', []).get(select_exp,[])
         print(f"ドライランモード: {len(experiments)}件の実験")
         print(f"{'='*60}")
-        
+
         for i, experiment in enumerate(experiments, 1):
             print(f"\n実験 {i}:")
             print(f"  Joint Torque: {experiment['joint_torque']}")
