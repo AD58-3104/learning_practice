@@ -91,6 +91,13 @@ class CommandBuilderApp(QWidget):
         checkbox_widget.setLayout(checkbox_layout)
         right_panel_layout.addWidget(checkbox_widget)
 
+        # タスク指定用のラベルとLineEdit
+        right_panel_layout.addWidget(QLabel('🔧 実行タスク (Execution Task):'))
+        self.execute_task_edit = QLineEdit()
+        self.execute_task_edit.setText("Humanoidprac-v0-play")
+        self.execute_task_edit.textChanged.connect(self.on_execute_task_changed)
+        right_panel_layout.addWidget(self.execute_task_edit)
+
         # 追加引数入力用のラベルとLineEdit
         right_panel_layout.addWidget(QLabel('🔧 追加引数 (Additional Arguments):'))
         self.additional_args_edit = QLineEdit()
@@ -146,6 +153,12 @@ class CommandBuilderApp(QWidget):
         if current_item:
             self.copy_to_clipboard(current_item, None)
 
+    def on_execute_task_changed(self, text):
+        """実行タスクが変更されたときの処理"""
+        current_item = self.file_list_widget.currentItem()
+        if current_item:
+            self.copy_to_clipboard(current_item, None)
+
     def copy_to_clipboard(self, item: QListWidgetItem, previous_item: QListWidgetItem):
         if not item:
             return
@@ -159,7 +172,8 @@ class CommandBuilderApp(QWidget):
         dir_path = self.dir_path_edit.text()
         command_template = self.command_template_edit.text()
         full_path = os.path.join(dir_path, clicked_item_text)
-        final_string = command_template + full_path.replace('\\', '/') + " " + self.get_joint_parameter_strings()
+        task_string = f"--task {self.execute_task_edit.text()}"
+        final_string = command_template + full_path.replace('\\', '/') + " " + task_string + " " + self.get_joint_parameter_strings()
         
         # ビデオ撮影オプションを追加
         if self.record_video_checkbox.isChecked():
