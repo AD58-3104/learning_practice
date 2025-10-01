@@ -246,6 +246,8 @@ class EventCfg:
         params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
     )
 
+    change_random_joint_torque = None  # これは必要な場所で後で上書きする
+
 
 @configclass
 class RewardsCfg:

@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
@@ -173,6 +174,23 @@ class H1FlatEnvCfg(H1RoughEnvCfg):
         self.rewards.feet_air_time.params["threshold"] = 0.6
 
 @configclass
+class H1FlatEnvCfgRandomJointDebuff(H1FlatEnvCfg):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        self.episode_length_s = 15.0
+
+        self.events.change_random_joint_torque = EventTerm(
+            func=mdp.change_random_joint_torque,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "joint_torque": [300.0],
+            },
+        )
+        self.events.change_joint_torque = None # disable the original one
+
+@configclass
 class H1FlatEnvCfg_PLAY(H1FlatEnvCfg):
     def __post_init__(self) -> None:
         # post init of parent
@@ -207,5 +225,7 @@ class H1FlatEnvCfg_PushExperiment(H1FlatEnvCfg):
             func=mdp.push_by_setting_velocity,
             mode="interval",
             interval_range_s=(10.0, 15.0),
-            params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+            params={"velocity_range": {"x": (-1.5, 1.5), "y": (-1.5, 1.5)},
+                    "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
+                    },
         )

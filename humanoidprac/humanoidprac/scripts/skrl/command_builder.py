@@ -50,6 +50,11 @@ class CommandBuilderApp(QWidget):
         self.preview_file_edit.setText('joint_cfg.json')
         left_panel_layout.addWidget(self.preview_file_edit)
 
+        # 5. ファイル再読み込みボタン
+        self.reload_button = QPushButton("🔄 ファイルを再読み込み")
+        self.reload_button.clicked.connect(self.reload_current_file)
+        left_panel_layout.addWidget(self.reload_button)
+
         # 4. ファイル/ディレクトリ一覧
         left_panel_layout.addWidget(QLabel('📋 ファイル/ディレクトリ一覧 (クリックしてコピー/プレビュー):'))
         self.file_list_widget = QListWidget()
@@ -72,8 +77,9 @@ class CommandBuilderApp(QWidget):
 
         # --- ★追加: 右側パネル（テキストプレビュー） ---
         self.preview_text_edit = QTextEdit()
-        self.preview_text_edit.setReadOnly(True) # 読み取り専用にする
+        self.preview_text_edit.setReadOnly(False)
         self.preview_text_edit.setPlaceholderText("左のリストからファイルをクリックすると、ここに内容が表示されます。")
+        self.preview_text_edit.textChanged.connect(self.on_preview_text_changed)
         right_panel_layout.addWidget(self.preview_text_edit)
 
         # ビデオ撮影とヘッドレスモードのチェックボックスを横並びに配置
@@ -276,6 +282,21 @@ class CommandBuilderApp(QWidget):
         
         self.copy_to_clipboard(current_item, previous_item)
 
+    def on_preview_text_changed(self):
+        """preview_text_editの内容が変更されたときの処理"""
+        try:
+            # JSONパースを試行
+            content = self.preview_text_edit.toPlainText()
+            if content.strip():
+                self.current_joint_params = json.loads(content)
+                # 現在選択されているアイテムでコマンドを更新
+                current_item = self.file_list_widget.currentItem()
+                if current_item:
+                    self.copy_to_clipboard(current_item, None)
+        except json.JSONDecodeError:
+            # JSONでない場合は何もしない
+            pass
+
     def execute_current_command(self):
         command = "gnome-terminal -- " + self.command_preview_line_edit.text()
         import datetime
@@ -283,6 +304,10 @@ class CommandBuilderApp(QWidget):
         print(f"Execute command [{currnet_time}]: ")
         print(f"{command}")
         subprocess.run(command,shell=True)
+
+    def reload_current_file(self):
+        """ディレクトリ一覧を再読み込み"""
+        self.update_directory_list(self.dir_path_edit.text())
 
 def main():
     app = QApplication(sys.argv)
