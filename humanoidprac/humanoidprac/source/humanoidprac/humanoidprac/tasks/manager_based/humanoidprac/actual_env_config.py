@@ -178,11 +178,12 @@ class H1FlatEnvCfgRandomJointDebuff(H1FlatEnvCfg):
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
-        self.episode_length_s = 15.0
+        self.episode_length_s = 20.0
 
         self.events.change_random_joint_torque = EventTerm(
             func=mdp.change_random_joint_torque,
-            mode="startup",
+            mode="interval",
+            interval_range_s=(5.0, 10.0),
             params={
                 "asset_cfg": SceneEntityCfg("robot"),
                 "joint_torque": [300.0],
