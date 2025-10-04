@@ -152,6 +152,7 @@ class change_random_joint_torque(ManagerTermBase):
         env_ids: torch.Tensor | None,
         joint_torque: float,
         asset_cfg: SceneEntityCfg,
+        include_normal: bool = False
     ):
         # resolve environment ids
         if env_ids is None:
@@ -161,8 +162,14 @@ class change_random_joint_torque(ManagerTermBase):
         # リセットする
         self.asset.write_joint_effort_limit_to_sim(self.torque_300_torch,self.legs.joint_ids, env_ids)
 
-        # ランダムに選んだ関節のトルクを制限する
         import random
-        random_joint = random.choice(self.random_joint_ids)
+        if include_normal:
+            random_joint = random.choice(self.legs.joint_ids + [999])
+            # 999が選ばれたら制限はしない
+            if random_joint == 999:
+                return
+        else:
+            # ランダムに選んだ関節のトルクを制限する
+            random_joint = random.choice(self.random_joint_ids)
         joint_torque_torch = torch.tensor(joint_torque,device="cuda")
         self.asset.write_joint_effort_limit_to_sim(joint_torque_torch, [random_joint], env_ids)
