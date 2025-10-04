@@ -230,3 +230,25 @@ class H1FlatEnvCfg_PushExperiment(H1FlatEnvCfg):
                     "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
                     },
         )
+
+
+@configclass
+class H1FlatEnvCfgDiscriminator(H1FlatEnvCfg):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        self.episode_length_s = 20.0
+
+        self.events.change_random_joint_torque = EventTerm(
+            func=mdp.change_random_joint_torque,
+            mode="interval",
+            interval_range_s=(5.0, 10.0),
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "joint_torque": [50.0],
+                "include_normal": True,  # 正常な状態も含める
+            },
+        )
+        self.events.change_joint_torque = None # disable the original one
+        self.rewards.track_ang_vel_z_exp.weight = 1.5  # 追従を少し強くする
+        self.rewards.track_lin_vel_xy_exp.weight = 1.5 
