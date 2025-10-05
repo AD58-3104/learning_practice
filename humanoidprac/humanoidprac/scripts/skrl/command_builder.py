@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 import json
+from command_generator import CommandGenerator
 
 class CommandBuilderApp(QWidget):
     """
@@ -17,6 +18,7 @@ class CommandBuilderApp(QWidget):
     """
     def __init__(self):
         super().__init__()
+        self.command_generator = CommandGenerator()
         self.initUI()
 
     def initUI(self):
@@ -58,10 +60,8 @@ class CommandBuilderApp(QWidget):
         # 4. ファイル/ディレクトリ一覧
         left_panel_layout.addWidget(QLabel('📋 ファイル/ディレクトリ一覧 (クリックしてコピー/プレビュー):'))
         self.file_list_widget = QListWidget()
-        # self.file_list_widget.itemClicked.connect(self.copy_to_clipboard)
         self.file_list_widget.currentItemChanged.connect(self.display_file_content)
-        # self.file_list_widget.currentItemChanged.connect(self.copy_to_clipboard)
-        self.current_joint_params = {}
+        self.current_json_params = {}   # JSONで保存されるなんらかのパラメータを格納する辞書
         left_panel_layout.addWidget(self.file_list_widget)
 
         self.exec_button = QPushButton("Execute")
@@ -175,54 +175,21 @@ class CommandBuilderApp(QWidget):
         else:
             return
 
-        dir_path = self.dir_path_edit.text()
-        command_template = self.command_template_edit.text()
-        full_path = os.path.join(dir_path, clicked_item_text)
-        task_string = f"--task {self.execute_task_edit.text()}"
-        final_string = command_template + full_path.replace('\\', '/') + " " + task_string + " " + self.get_joint_parameter_strings()
-        
-        # ビデオ撮影オプションを追加
-        if self.record_video_checkbox.isChecked():
-            final_string += " --video --video_length 1000"
-        
-        # ヘッドレスモードオプションを追加
-        if self.headless_checkbox.isChecked():
-            final_string += " --headless"
-
-        # ユーザーが入力した追加引数を追加
-        additional_args = self.additional_args_edit.text().strip()
-        if additional_args:
-            final_string += " " + additional_args
+        final_string = self.command_generator.build_command(
+            dir_path=self.dir_path_edit.text(),
+            clicked_item_text=clicked_item_text,
+            command_template=self.command_template_edit.text(),
+            task_name=self.execute_task_edit.text(),
+            json_params=self.current_json_params,
+            record_video=self.record_video_checkbox.isChecked(),
+            headless=self.headless_checkbox.isChecked(),
+            additional_args=self.additional_args_edit.text()
+        )
 
         clipboard = QApplication.clipboard()
         clipboard.setText(final_string)
         self.command_preview_line_edit.setText(final_string)
         print(f"クリップボードにコピーしました: {final_string}")
-
-
-    def get_joint_parameter_strings(self) -> str:
-        result_str = ""
-        torques = self.current_joint_params.get('joint_torques',[])
-        torque_str = str(torques).replace(' ', '')  # スペースを除去
-        result_str =  result_str + " " + (f'env.events.change_joint_torque.params.joint_torque={torque_str}')
-        print(torque_str)
-
-        # ジョイント名設定
-        names = self.current_joint_params.get('joint_names',[])
-        names_str = str(names).replace(' ', '')  # スペースを除去
-        names_str = names_str.replace("'", '"')
-        result_str = result_str + " " + (f"'env.events.change_joint_torque.params.asset_cfg.joint_names={names_str}'")
-        print(names_str)
-        # ↑なんかこれシングルクオートで囲って、]はエスケープしない。文字列は""で囲むでいけた。よくわからん。
-        
-        # ImplicitActuator側でのeffort_limitの設定
-        effort_limit_str = "--joint_cfg '{"
-        for joint_name, torque in zip(names, torques):
-            effort_limit_str += f'"{joint_name}":{torque}, '
-        effort_limit_str = effort_limit_str.rstrip(", ") + "}'"
-        result_str = result_str + " " + effort_limit_str
-        print(effort_limit_str)
-        return result_str
 
     def display_file_content(self, current_item: QListWidgetItem, previous_item: QListWidgetItem):
         """
@@ -268,9 +235,9 @@ class CommandBuilderApp(QWidget):
             try:
                 with open(preview_target_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                    # JSONファイルならパースしてcurrent_joint_paramsに保存
+                    # JSONファイルならパースしてcurrent_json_paramsに保存
                     if ext in [".json"]:
-                        self.current_joint_params = json.loads(content)
+                        self.current_json_params = json.loads(content)
                 self.preview_text_edit.setText(content)
                 print(f"Debug content {preview_target_path}")
             except UnicodeDecodeError:
@@ -288,7 +255,7 @@ class CommandBuilderApp(QWidget):
             # JSONパースを試行
             content = self.preview_text_edit.toPlainText()
             if content.strip():
-                self.current_joint_params = json.loads(content)
+                self.current_json_params = json.loads(content)
                 # 現在選択されているアイテムでコマンドを更新
                 current_item = self.file_list_widget.currentItem()
                 if current_item:
