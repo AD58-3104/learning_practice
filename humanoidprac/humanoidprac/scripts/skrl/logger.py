@@ -184,3 +184,19 @@ class ExperimentValueLogger:
             shutil.copyfile(name, os.path.join("exp_logdata", os.path.basename(name)))
         print(f"[Exp Data Logger] Step {self.step_count} reached.")
         print("[Exp Data Logger] Logging finished.")
+
+
+# NNの判別器を訓練するために利用する観測を保存するクラス
+class DiscriminatorObsDataLogger:
+    def __init__(self, log_file_name: str = "discriminator_obs.dat"):
+        self.log_file_name = log_file_name
+        self.log_file = open(log_file_name, 'w')
+        print(f"[Discriminator Data Logger] Open logfile {log_file_name}")
+        self.log_file.write("step,observations\n")
+
+    def log(self, step: int, observations: torch.Tensor):
+        self.log_file.write(f"{step},{','.join(map(str, observations[0].tolist()))}\n")
+
+    def close(self):
+        self.log_file.close()
+        print(f"[Discriminator Data Logger] Logfile {self.log_file_name} closed.")
