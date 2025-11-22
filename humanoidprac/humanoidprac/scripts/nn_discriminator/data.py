@@ -95,7 +95,7 @@ class DataMerger:
 import bisect
 
 class JointDataset(Dataset):
-    def __init__(self,data_dir: str, device: torch.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")):
+    def __init__(self,data_dir: str,sequence_length:int = 1 ,device: torch.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")):
         self.device = device
         self.data_dir = Path(data_dir)
         all_data_files = sorted(list(self.data_dir.glob("*_data.csv")))
@@ -125,30 +125,51 @@ class JointDataset(Dataset):
                 continue
 
         self.file_num = len(self.data_file_list)
+        self.sequence_length = sequence_length  # 時系列ではないやつなら1にする。
+        self._update_sequence_cumulative_lengths()
+
+    def _update_sequence_cumulative_lengths(self):
+        """sequence_lengthを考慮した累積長を再計算"""
+        self.sequence_cumulative_lengths = [0]
+        self.sequence_total_length = 0
+        for length in self.episode_lengths:
+            # 各ファイルから取れるシーケンス数 = max(0, length - sequence_length + 1)
+            num_sequences = max(0, length - self.sequence_length + 1)
+            self.sequence_total_length += num_sequences
+            self.sequence_cumulative_lengths.append(self.sequence_total_length)
+
+    def set_sequence_length(self, length: int):
+        self.sequence_length = length
+        self._update_sequence_cumulative_lengths()
 
     def __len__(self):
-        return self.total_length
-    
+        return self.sequence_total_length
+
     def __getitem__(self, idx):
         # 負のインデックス対応
         if idx < 0:
-            idx += self.total_length
-        if idx < 0 or idx >= self.total_length:
+            idx += self.sequence_total_length
+        if idx < 0 or idx >= self.sequence_total_length:
             raise IndexError("Index out of range")
 
         # idxがどのエピソード(ファイル)に属するかを二分探索で求める
-        # cumulative_lengths = [0, len0, len0+len1, ..., total]
-        file_idx = bisect.bisect_right(self.cumulative_lengths, idx) - 1
-        local_idx = idx - self.cumulative_lengths[file_idx]
+        # sequence_cumulative_lengths = [0, seq_num0, seq_num0+seq_num1, ..., total]
+        file_idx = bisect.bisect_right(self.sequence_cumulative_lengths, idx) - 1
+        local_idx = idx - self.sequence_cumulative_lengths[file_idx]
 
-        # 対応するファイルからlocal_idx行目だけ読む
+        # 対応するファイルからlocal_idx行目からsequence_length行読む
         # header=Noneでヘッダーなしとして読み込み、dtypeで型を指定
-        data_row = pd.read_csv(self.data_file_list[file_idx], skiprows=local_idx, nrows=1, header=None, dtype=float)
-        label_row = pd.read_csv(self.label_file_list[file_idx], skiprows=local_idx, nrows=1, header=None, dtype=int)
+        data_rows = pd.read_csv(self.data_file_list[file_idx], skiprows=local_idx, nrows=self.sequence_length, header=None, dtype=float)
+        label_rows = pd.read_csv(self.label_file_list[file_idx], skiprows=local_idx, nrows=self.sequence_length, header=None, dtype=int)
 
-        # テンソル化（1行を1次元ベクトルに）
-        data = torch.tensor(data_row.values[0], dtype=torch.float32, device=self.device)
-        label = torch.tensor(label_row.values[0], dtype=torch.float32, device=self.device)
+        # テンソル化（sequence_length x feature_dim の2次元テンソル）
+        data = torch.tensor(data_rows.values, dtype=torch.float32, device=self.device)
+        label = torch.tensor(label_rows.values, dtype=torch.float32, device=self.device)
+
+        # sequence_length=1 の場合は従来通り1次元ベクトルとして返す
+        if self.sequence_length == 1:
+            data = data.squeeze(0)
+            label = label.squeeze(0)
 
         return {'data': data, 'label': label}
 

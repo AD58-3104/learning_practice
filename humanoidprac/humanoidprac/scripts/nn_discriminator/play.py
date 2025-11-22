@@ -4,17 +4,17 @@ import time
 
 
 if __name__ == "__main__":
-    from model import JointNet
+    from model import JointGRUNet
 
     input_size = 69    # 観測は69次元
-    hidden_size = 64
+    hidden_size = 128
     output_size = 19   # 19個の関節それぞれに故障があるかどうかを判断
 
-    model = JointNet(input_size, hidden_size, output_size).to("cuda")
-    model.load_state_dict(torch.load("models/joint_net_epoch_10.pth"))
+    model = JointGRUNet(input_size, hidden_size, output_size).to("cuda")
+    model.load_state_dict(torch.load("models/joint_net_epoch_5.pth"))
     model.eval()
 
-    datasets = data.JointDataset(data_dir="test_data/processed_data", device="cuda")
+    datasets = data.JointDataset(data_dir="test_data/processed_data", device="cuda",sequence_length=10)
     dataloader = torch.utils.data.DataLoader(datasets, batch_size=32, shuffle=False, collate_fn=data.collate_episodes)
 
     total_correct = 0
@@ -25,9 +25,10 @@ if __name__ == "__main__":
         for batch in dataloader:
             inputs, targets = batch
             outputs = model(inputs)
-            _, predicted = torch.max(outputs, 1)
-            total_correct += (predicted == targets).sum().item()
-            total_samples += targets.size(0)
+            outputs = (outputs > 0.6).long()
+            targets = targets[:,-1,:].long()
+            total_correct += (outputs == targets).sum().item()
+            total_samples += targets.numel()
 
     accuracy = total_correct / total_samples
     print(f"Evaluation accuracy: {accuracy * 100:.2f}%")
