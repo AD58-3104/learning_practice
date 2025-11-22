@@ -12,3 +12,5 @@ build/
 develop-eggs/
 dist/
 .vscode/**
+processed_data/
+learning_log/
