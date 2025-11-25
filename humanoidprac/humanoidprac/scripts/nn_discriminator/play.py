@@ -1,17 +1,21 @@
 import torch
 import data
 import time
-
+import argparse
 
 if __name__ == "__main__":
     from model import JointGRUNet
+
+    parser = argparse.ArgumentParser(description="Evaluate JointGRUNet model")
+    parser.add_argument("--model-path", type=str, default="models/joint_net_epoch_5.pth", help="Path to the trained model")
+    args = parser.parse_args()
 
     input_size = 69    # 観測は69次元
     hidden_size = 128
     output_size = 19   # 19個の関節それぞれに故障があるかどうかを判断
 
     model = JointGRUNet(input_size, hidden_size, output_size).to("cuda")
-    model.load_state_dict(torch.load("models/joint_net_epoch_5.pth"))
+    model.load_state_dict(torch.load(args.model_path))
     model.eval()
 
     datasets = data.JointDataset(data_dir="test_data/processed_data", device="cuda",sequence_length=10)
