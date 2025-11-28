@@ -102,12 +102,14 @@ class CustomParallelAgentTrainer(Trainer):
         # 健康状態で動かすためのエージェント。これはactしか使わない
         self.health_agent = health_agent
 
+        self.joint_num = 19  # ヒューマノイドの関節数
+
         # 状態履歴キューの初期化 これの長さはGRUのsequence_lengthに合わせる。なので10
         self.state_history_queue = StateHistoryQueue(max_length=10,num_envs=self.num_envs, device=self.device)
         
         # JointGRUNetモデルの読み込み
         # このモデルは出力を outputs > 0.6で二値化する必要があるので注意
-        self.joint_gru_net = JointGRUNet(input_size=69, hidden_size=128, output_size=19).to("cuda")
+        self.joint_gru_net = JointGRUNet(input_size=69, hidden_size=128, output_size=self.joint_num).to("cuda")
         self.joint_gru_net.load_state_dict(torch.load("model.pth"))
         self.joint_gru_net.eval()
 
@@ -121,6 +123,8 @@ class CustomParallelAgentTrainer(Trainer):
                 agent.init(trainer_cfg=self.cfg)
         else:
             self.agents.init(trainer_cfg=self.cfg)
+        self.health_agent.init(trainer_cfg=self.cfg)
+        self.health_agent.set_running_mode("eval")  # 健康状態モデルはevalモードで固定
 
     def train(self) -> None:
         """Train the agents sequentially
@@ -186,16 +190,29 @@ class CustomParallelAgentTrainer(Trainer):
                 continue
 
             with torch.no_grad():
+                # shape (num_envs,)
+                reseted_mask = self.state_history_queue.get_reseted_tensor()
                 # shape (num_envs, 19)
-                joint_failure_mask = self.joint_gru_net(self.state_history_queue.get_state_sequence())
+                joint_failure = (self.joint_gru_net(self.state_history_queue.get_state_sequence()) > 0.6)
+                # リセットされてすぐの環境は全ての関節が健康だとする
+                joint_failure = joint_failure.masked_fill_(reseted_mask.unsqueeze(-1), False)
+                
+                # 各関節ごとに故障マスクテンソルを取得（id,tensor）
+                joint_mask_tensors : list[tuple[int, torch.Tensor]] = []
+                for joint_id in range(self.joint_num):
+                    # 関節iが故障している環境についてはTrue、そうでなければFalseのマスクテンソルを作成
+                    joint_mask = joint_failure[:, joint_id]  # shape: (num_envs,)
+                    joint_mask_tensors.append((joint_id, joint_mask))
 
                 # compute actions
-                actions = torch.vstack(
-                    [
-                        agent.act(states[scope[0] : scope[1]], timestep=timestep, timesteps=self.timesteps)[0]
-                        for agent, scope in zip(self.agents, self.agents_scope)
-                    ]
-                )
+                actions = torch.zeros((self.num_envs, self.env.action_space.shape[0]), device=self.device)
+                for joint_id, joint_mask in joint_mask_tensors:
+                    agent = self.agents[joint_id]
+                    if joint_mask.any():
+                        # 故障している環境については対応する関節に応じたエージェントで行動を計算
+                        actions[joint_mask] = agent.act(
+                            states[joint_mask], timestep=timestep, timesteps=self.timesteps
+                        )[0]
 
                 # step the environments
                 next_states, rewards, terminated, truncated, infos = self.env.step(actions)
@@ -204,15 +221,15 @@ class CustomParallelAgentTrainer(Trainer):
                 if not self.headless:
                     self.env.render()
 
-                # record the environments' transitions
-                for agent, scope in zip(self.agents, self.agents_scope):
-                    agent.record_transition(
-                        states=states[scope[0] : scope[1]],
-                        actions=actions[scope[0] : scope[1]],
-                        rewards=rewards[scope[0] : scope[1]],
-                        next_states=next_states[scope[0] : scope[1]],
-                        terminated=terminated[scope[0] : scope[1]],
-                        truncated=truncated[scope[0] : scope[1]],
+                # マスクを使って対応するエージェントに対して遷移を記録させる
+                for joint_id, joint_mask in joint_mask_tensors:
+                    self.agents[joint_id].record_transition(
+                        states=states[joint_mask],
+                        actions=actions[joint_mask],
+                        rewards=rewards[joint_mask],
+                        next_states=next_states[joint_mask],
+                        terminated=terminated[joint_mask],
+                        truncated=truncated[joint_mask],
                         infos=infos,
                         timestep=timestep,
                         timesteps=self.timesteps,
@@ -251,6 +268,7 @@ class CustomParallelAgentTrainer(Trainer):
         """
         # set running mode
         if self.num_simultaneous_agents > 1:
+            self.health_agent.set_running_mode("eval")
             for agent in self.agents:
                 agent.set_running_mode("eval")
         else:
@@ -273,22 +291,51 @@ class CustomParallelAgentTrainer(Trainer):
             range(self.initial_timestep, self.timesteps), disable=self.disable_progressbar, file=sys.stdout
         ):
 
-            # pre-interaction
-            for agent in self.agents:
-                agent.pre_interaction(timestep=timestep, timesteps=self.timesteps)
+            # 状態履歴キューに現在の状態を追加
+            self.state_history_queue.append_state(states)
+
+            if not self.state_history_queue.ready():
+                # ここに入るのは最初のsequense_length個のステップだけ
+                with torch.no_grad():
+                    # health_agentはinitの中でevalになっていて、その後trainには切り替えないのでこのままで良い
+                    actions = self.health_agent.act(states, timestep=timestep, timesteps=self.timesteps)[0]
+                    next_states, _, terminated, truncated, _ = self.env.step(actions)
+                    # 面倒なのでログは飛ばす
+                    # 訓練も当然しない
+                    # reset environments
+                    if terminated.any() or truncated.any():
+                        with torch.no_grad():
+                            states, infos = self.env.reset()
+                    else:
+                        states = next_states
+                    reseted_tensor = terminated | truncated
+                    self.state_history_queue.append_reseted(reseted_tensor)
+                continue
 
             with torch.no_grad():
+                # shape (num_envs,)
+                reseted_mask = self.state_history_queue.get_reseted_tensor()
+                # shape (num_envs, 19)
+                joint_failure = (self.joint_gru_net(self.state_history_queue.get_state_sequence()) > 0.6).to(torch.bool)
+                # リセットされてすぐの環境は全ての関節が健康だとする
+                joint_failure = joint_failure.masked_fill_(reseted_mask.unsqueeze(-1), False)
+                
+                # 各関節ごとに故障マスクテンソルを取得（id,tensor）
+                joint_mask_tensors : list[tuple[int, torch.Tensor]] = []
+                for joint_id in range(self.joint_num):
+                    # 関節iが故障している環境についてはTrue、そうでなければFalseのマスクテンソルを作成
+                    joint_mask = joint_failure[:, joint_id]  # shape: (num_envs,)
+                    joint_mask_tensors.append((joint_id, joint_mask))
+
                 # compute actions
-                outputs = [
-                    agent.act(states[scope[0] : scope[1]], timestep=timestep, timesteps=self.timesteps)
-                    for agent, scope in zip(self.agents, self.agents_scope)
-                ]
-                actions = torch.vstack(
-                    [
-                        output[0] if self.stochastic_evaluation else output[-1].get("mean_actions", output[0])
-                        for output in outputs
-                    ]
-                )
+                actions = torch.zeros((self.num_envs, self.env.action_space.shape[0]), device=self.device)
+                for joint_id, joint_mask in joint_mask_tensors:
+                    agent = self.agents[joint_id]
+                    if joint_mask.any():
+                        # 故障している環境については対応する関節に応じたエージェントで行動を計算
+                        actions[joint_mask] = agent.act(
+                            states[joint_mask], timestep=timestep, timesteps=self.timesteps
+                        )[0]
 
                 # step the environments
                 next_states, rewards, terminated, truncated, infos = self.env.step(actions)
@@ -297,34 +344,12 @@ class CustomParallelAgentTrainer(Trainer):
                 if not self.headless:
                     self.env.render()
 
-                # write data to TensorBoard
-                for agent, scope in zip(self.agents, self.agents_scope):
-                    agent.record_transition(
-                        states=states[scope[0] : scope[1]],
-                        actions=actions[scope[0] : scope[1]],
-                        rewards=rewards[scope[0] : scope[1]],
-                        next_states=next_states[scope[0] : scope[1]],
-                        terminated=terminated[scope[0] : scope[1]],
-                        truncated=truncated[scope[0] : scope[1]],
-                        infos=infos,
-                        timestep=timestep,
-                        timesteps=self.timesteps,
-                    )
-
-                # log environment info
-                if self.environment_info in infos:
-                    for k, v in infos[self.environment_info].items():
-                        if isinstance(v, torch.Tensor) and v.numel() == 1:
-                            for agent in self.agents:
-                                agent.track_data(f"Info / {k}", v.item())
-
-            # post-interaction
-            for agent in self.agents:
-                super(type(agent), agent).post_interaction(timestep=timestep, timesteps=self.timesteps)
-
             # reset environments
             if terminated.any() or truncated.any():
                 with torch.no_grad():
                     states, infos = self.env.reset()
             else:
                 states = next_states
+            # リセット状態を状態履歴キューに追加
+            reseted_tensor = terminated | truncated
+            self.state_history_queue.append_reseted(reseted_tensor)
