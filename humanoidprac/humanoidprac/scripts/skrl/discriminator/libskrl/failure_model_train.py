@@ -104,6 +104,8 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import humanoidprac.tasks  # noqa: F401
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append("../")
+sys.path.append("../../")
 import logger  # noqa: F401
 
 # config shortcuts
@@ -195,74 +197,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)  # same as: `wrap_env(env, wrapper="auto")`
 
     # 学習済みエージェントの読み込み
-    learned_models = ["normal_agent.pt","knee_agent.pt"]
+    target_agents = []
+    joint_num = 19
+
     import yaml
     learned_model_conf = yaml.safe_load(open("learned_agent_cfg.yaml"))
-    learned_agents = []
-    for model in learned_models:
+    health_agent_model = "normal_agent.pt"
+    tmp_rn = Runner(env, learned_model_conf)
+    tmp_rn.agent.load(health_agent_model)
+
+    # 健康状態モデルのエージェント
+    health_agent = tmp_rn.agent
+
+    for _ in range(joint_num):
+        # エージェントをコンフィグから簡単に構築できるのがRunnerしか無いから使う
         rn = Runner(env, learned_model_conf)
-        rn.agent.load(model)
-        learned_agents.append(rn.agent)
+        rn.agent.load(health_agent_model)
+        target_agents.append(rn.agent)
 
-    from skrl.memories.torch import RandomMemory
-    memory = RandomMemory(
-        memory_size=agent_cfg["memory"]["memory_size"],
-        num_envs=env.num_envs,
-        device=env.device,
+    from custom_parallel_trainer import CustomParallelAgentTrainer
+    trainer = CustomParallelAgentTrainer(
+        env=env,
+        agents=target_agents,
+        health_agent=health_agent,
+        cfg=agent_cfg["trainer"],
     )
 
-    from skrl.utils.model_instantiators.torch import deterministic_model
-    import discrete_model
-    from gymnasium.spaces import Discrete
-
-    models = {}
-    # models["policy"] = discrete_model.MLP(
-    #                 observation_space=env.observation_space,
-    #                 action_space=Discrete(2),  # 2つのモデルから選ぶ行動
-    #                 device=env.device,
-    #             )
-    models["policy"] = discrete_model.GRU(
-                observation_space=env.observation_space,
-                action_space=Discrete(2),  # 2つのモデルから選ぶ行動
-                device=env.device,
-                num_envs=env.num_envs,
-                sequence_length=6,  # 6ステップ分の履歴を考慮。
-                # これは、ロールアウトの時のステップ数と関連がある。rollout=24,mini_batches=4であれば、
-                # 6ステップ分の履歴まで考慮できる。6ステップの、それの約数だけが使える。
-                )
-    models["value"] = deterministic_model(
-                    observation_space=env.observation_space,
-                    action_space=Discrete(2),  # discriminator用の離散アクション空間
-                    device=env.device,
-                    **agent_cfg["models"]["value"],
-                )
-
-    from skrl.resources.schedulers.torch import KLAdaptiveRL
-    agent_cfg["agent"]["learning_rate_scheduler"] = KLAdaptiveRL
-
-    # from skrl.agents.torch.ppo import PPO
-    from skrl.agents.torch.ppo import PPO_RNN as PPO
-    agent = PPO(
-        models=models,  # models dict
-        memory=memory,  # memory instance, or None if not required
-        cfg=agent_cfg["agent"],  # configuration dict (preprocessors, learning rate schedulers, etc.)
-        observation_space=env.observation_space,
-        action_space=Discrete(2),
-        device=env.device,
-    )
-
-    # load checkpoint (if specified)
-    if resume_path:
-        print(f"[INFO] Loading model checkpoint from: {resume_path}")
-        agent.load(resume_path)
-
-    # trainer = SequentialTrainer(env=env, agents=[agent], cfg=agent_cfg["trainer"])
-    from custom_trainer import CustomTrainer
-    custom_trainer = CustomTrainer(learned_agents=learned_agents,env=env,agents=[agent],cfg=agent_cfg["trainer"])
-    custom_trainer.train()
+    trainer.train()
 
     # close the simulator
     env.close()
+    trainer.save(os.path.join(log_dir, "models"))
 
 
 if __name__ == "__main__":

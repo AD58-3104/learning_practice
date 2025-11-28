@@ -68,3 +68,6 @@ train.pyではskrl.trainers.torch.SequentialTrainer.train()を呼んで学習を
     - record_transitionする。この時、maskで取り出したやつだけ対応するagentに保存するようにする。健康状態には勿論やらない。
     - post_interactionする。当然健康状態のagentにはこれは実行しない。
   - 保存についてはよく分からないので、もう最後に全部save()を呼んで保存で良いかな。
+  - 冷静に考えてみると、関節の故障状況でマスクすればいいだけなので、わざわざscopeとか頑張って設定する必要なかったわ。record_transitionもマスクテンソルで取り出せばどうとでもなったわ。
+  - agentは全て同じコンフィグで起動する
+  - 
