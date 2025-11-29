@@ -14,6 +14,37 @@ from skrl.trainers.torch import Trainer
 sys.path.append("../../../nn_discriminator")
 from joint_model import JointGRUNet
 
+class AgentModelLoader:
+    def __init__(self, model_path: str, yaml_conf_path: str, env):
+        """
+        指定したパスにあるモデルを読み込んでエージェントにセットする
+        """
+        self.model_path = model_path
+        self.agents = []
+        self.load_models(model_path)
+        import yaml
+        self.yaml_conf = yaml.safe_load(open(yaml_conf_path))
+        self.env = env
+
+
+    def load_models(self, model_path: str) -> None:
+        from skrl.utils.runner.torch import Runner
+        rn = Runner(self.env, self.yaml_conf)
+        print(f"[INFO] Loading agents from directory: {model_path}")
+        import os
+        for joint_id in range(19):
+            rn.agent.load(os.path.join(self.model_path, f"agent_joint_{joint_id}"))
+            self.agents.append(rn.agent)
+
+    def get_agents(self) -> List[Agent]:
+        """
+        Get the loaded agents.
+
+        :return: The list of loaded agents.
+        :rtype: List[skrl.agents.torch.Agent]
+        """
+        return self.agents
+
 class StateHistoryQueue:
     def __init__(self, max_length: int, num_envs: int, device: str = "cuda"):
         self.max_length = max_length
@@ -133,6 +164,11 @@ class CustomParallelAgentTrainer(Trainer):
             self.agents.init(trainer_cfg=self.cfg)
         self.health_agent.init(trainer_cfg=self.cfg)
         self.health_agent.set_running_mode("eval")  # 健康状態モデルはevalモードで固定
+        import os
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_ppo")
+        self.model_save_dir = os.path.join("trained_models",current_time)
+        self.model_save_interval = 3000 # timesteps毎に保存
 
     def train(self) -> None:
         """Train the agents sequentially
@@ -243,6 +279,8 @@ class CustomParallelAgentTrainer(Trainer):
                     if joint_mask.any():
                         masked_rewards[joint_mask] = rewards[joint_mask]
 
+                    # 全環境保存してしまっているが、健康状態と他関節環境は報酬が0になっている。
+                    # 理想はそれぞれの環境で全て分けたいが、やり方が分からない。
                     self.agents[joint_id].record_transition(
                         states=states,
                         actions=joint_actions_dict[joint_id],
@@ -255,12 +293,21 @@ class CustomParallelAgentTrainer(Trainer):
                         timesteps=self.timesteps,
                     )
 
-                # log environment info
+                # log environment info (各エージェント固有の報酬をログ)
+                for joint_id, joint_mask in joint_mask_tensors:
+                    # 故障している環境のみの平均報酬を計算
+                    if joint_mask.any():
+                        agent_mean_reward = rewards[joint_mask].mean().item()
+                        self.agents[joint_id].track_data(f"Reward / mean_reward", agent_mean_reward)
+                        # 故障している環境の数もログ
+                        self.agents[joint_id].track_data(f"Info / num_failure_envs", joint_mask.sum().item())
+
+                # 共通の環境情報もログ（オプション）
                 if self.environment_info in infos:
                     for k, v in infos[self.environment_info].items():
                         if isinstance(v, torch.Tensor) and v.numel() == 1:
-                            for agent in self.agents:
-                                agent.track_data(f"Info / {k}", v.item())
+                            # 各エージェントに個別にログするのではなく、最初のエージェントだけにログ
+                            self.agents[0].track_data(f"Info / {k}", v.item())
 
             # post-interaction
             for agent in self.agents:
@@ -275,6 +322,14 @@ class CustomParallelAgentTrainer(Trainer):
             # リセット状態を状態履歴キューに追加
             reseted_tensor = terminated | truncated
             self.state_history_queue.append_reseted(reseted_tensor)
+
+            # モデルの定期保存
+            if (timestep + 1) % self.model_save_interval == 0:
+                # デフォルトの保存方法だと管理不能なのでこれで保存する
+                self.save(self.model_save_dir)
+        
+        print("[INFO] Training completed.")
+        self.save(self.model_save_dir)
 
     def eval(self) -> None:
         """Evaluate the agents sequentially
@@ -383,8 +438,8 @@ class CustomParallelAgentTrainer(Trainer):
         :param dir_path: モデルを保存するディレクトリパス
         :type dir_path: str
         """
-        super().save(dir_path)
         # 各エージェントのやつを全部保存する
         import os
+        os.makedirs(dir_path, exist_ok=True)
         for joint_id, agent in enumerate(self.agents):
             agent.save(os.path.join(dir_path, f"agent_joint_{joint_id}"))
