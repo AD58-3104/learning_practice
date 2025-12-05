@@ -174,24 +174,6 @@ class H1FlatEnvCfg(H1RoughEnvCfg):
         self.rewards.feet_air_time.params["threshold"] = 0.6
 
 @configclass
-class H1FlatEnvCfgRandomJointDebuff(H1FlatEnvCfg):
-    def __post_init__(self):
-        # post init of parent
-        super().__post_init__()
-        self.episode_length_s = 20.0
-
-        self.events.change_random_joint_torque = EventTerm(
-            func=mdp.change_random_joint_torque,
-            mode="interval",
-            interval_range_s=(5.0, 10.0),
-            params={
-                "asset_cfg": SceneEntityCfg("robot"),
-                "joint_torque": [300.0],
-            },
-        )
-        self.events.change_joint_torque = None # disable the original one
-
-@configclass
 class H1FlatEnvCfg_PLAY(H1FlatEnvCfg):
     def __post_init__(self) -> None:
         # post init of parent
@@ -205,6 +187,63 @@ class H1FlatEnvCfg_PLAY(H1FlatEnvCfg):
         # remove random pushing
         self.events.base_external_force_torque = None
         self.events.push_robot = None
+
+@configclass
+class H1FlatEnvCfgRandomJointDebuff(H1FlatEnvCfg):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        self.episode_length_s = 20.0
+
+        self.events.change_random_joint_torque = EventTerm(
+            func=mdp.change_random_joint_torque,
+            mode="interval",
+            interval_range_s=(5.0, 10.0),
+            params={
+                "target_joint_cfg": SceneEntityCfg(
+                                name="robot",
+                                joint_names=[            
+                                    "right_hip_yaw",
+                                    "left_hip_yaw",
+                                    "right_hip_roll",
+                                    "left_hip_roll",
+                                    "right_hip_pitch",
+                                    "left_hip_pitch",
+                                    "right_knee",
+                                    "left_knee",]),
+                "joint_torque": [50.0],
+            },
+        )
+        self.events.change_joint_torque = None # disable the original one
+
+@configclass
+class H1FlatEnvCfgRandomJointDebuff_PLAY(H1FlatEnvCfg_PLAY):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        self.episode_length_s = 20.0
+
+        self.events.change_random_joint_torque = EventTerm(
+            func=mdp.change_random_joint_torque,
+            mode="interval",
+            interval_range_s=(5.0, 10.0),
+            params={
+                "target_joint_cfg": SceneEntityCfg(
+                                        name="robot",
+                                        joint_names=[
+                                            "right_hip_yaw",
+                                            "left_hip_yaw",
+                                            "right_hip_roll",
+                                            "left_hip_roll",
+                                            "right_hip_pitch",
+                                            "left_hip_pitch",
+                                            "right_knee",
+                                            "left_knee",]),
+                "joint_torque": [50.0],
+                "normal_size": 1,  # 正常な状態も含める
+            },
+        )
+        self.events.change_joint_torque = None # disable the original one
 
 
 @configclass
@@ -237,18 +276,55 @@ class H1FlatEnvCfgDiscriminator(H1FlatEnvCfg):
     def __post_init__(self):
         # post init of parent
         super().__post_init__()
-        self.episode_length_s = 20.0
+        self.episode_length_s = 30.0
 
         self.events.change_random_joint_torque = EventTerm(
             func=mdp.change_random_joint_torque,
             mode="interval",
-            interval_range_s=(5.0, 10.0),
+            interval_range_s=(5.0, 24.0),
             params={
-                "asset_cfg": SceneEntityCfg("robot"),
+                "target_joint_cfg": SceneEntityCfg(name="robot",joint_names=["right_knee","left_knee"]),
                 "joint_torque": [50.0],
-                "include_normal": True,  # 正常な状態も含める
+                "normal_size": 2,  # 正常な状態を2つ含めて学習
             },
         )
         self.events.change_joint_torque = None # disable the original one
         self.rewards.track_ang_vel_z_exp.weight = 1.5  # 追従を少し強くする
         self.rewards.track_lin_vel_xy_exp.weight = 1.5 
+        self.rewards.joint_deviation_torso = None  # この辺の報酬は変わりようが無いので消す
+        self.rewards.joint_deviation_arms = None
+        self.rewards.joint_deviation_hip = None
+        self.rewards.feet_slide = None
+        self.rewards.feet_slide = None
+        self.rewards.dof_pos_limits = None
+        self.rewards.feet_air_time = None
+
+
+@configclass 
+class H1FlatEnvCfgCorrectLearningData(H1FlatEnvCfg_PLAY):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        self.episode_length_s = 15.0
+        self.events.change_random_joint_torque = EventTerm(
+            func=mdp.change_random_joint_torque,
+            mode="interval",
+            interval_range_s=(5.0, 13.0),
+            params={
+                "target_joint_cfg": SceneEntityCfg(
+                                        name="robot",
+                                        joint_names=[
+                                            "right_hip_yaw",
+                                            "left_hip_yaw",
+                                            "right_hip_roll",
+                                            "left_hip_roll",
+                                            "right_hip_pitch",
+                                            "left_hip_pitch",
+                                            "right_knee",
+                                            "left_knee",
+                                        ]),
+                "joint_torque": [50.0],
+                "normal_size": 0,
+                "logging": True,
+            },
+        )

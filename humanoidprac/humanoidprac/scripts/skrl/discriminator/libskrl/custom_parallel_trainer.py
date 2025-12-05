@@ -7,6 +7,8 @@ import tqdm
 
 import torch
 
+from humanoidprac.tasks.manager_based.humanoidprac.mdp.events import EnvIdClassifier
+
 from skrl.agents.torch import Agent
 from skrl.envs.wrappers.torch import Wrapper
 from skrl.trainers.torch import Trainer
@@ -21,19 +23,27 @@ class AgentModelLoader:
         """
         self.model_path = model_path
         self.agents = []
-        self.load_models(model_path)
         import yaml
         self.yaml_conf = yaml.safe_load(open(yaml_conf_path))
         self.env = env
+        self.load_models(model_path)
 
 
     def load_models(self, model_path: str) -> None:
+        """
+        指定したパスにあるモデルを全て読み込む。
+        これは、trainerの方で利用するモデルの数と同じ数のモデルが保存されていることを前提とする。
+        :param model_path: モデルが保存されているディレクトリパス
+        """
         from skrl.utils.runner.torch import Runner
         rn = Runner(self.env, self.yaml_conf)
         print(f"[INFO] Loading agents from directory: {model_path}")
         import os
-        for joint_id in range(19):
-            rn.agent.load(os.path.join(self.model_path, f"agent_joint_{joint_id}"))
+        import re
+        files = os.listdir(model_path)
+        sorted_files = sorted(files, key=lambda x: int(re.search(r'_(\d+)\.', x).group(1)))
+        for file_name in sorted_files:
+            rn.agent.load(os.path.join(self.model_path, file_name))
             self.agents.append(rn.agent)
 
     def get_agents(self) -> List[Agent]:
@@ -55,6 +65,7 @@ class StateHistoryQueue:
         self.reseted_queue = queue.Queue(maxsize=max_length)
 
     def append_state(self, state: torch.Tensor):
+        # state shape: (num_envs, state_dim)
         if self.queue.full():
             self.queue.get()
         self.queue.put(state)
@@ -66,7 +77,9 @@ class StateHistoryQueue:
 
     def get_state_sequence(self) -> torch.Tensor:
         states = list(self.queue.queue)
-        return torch.stack(states, dim=0)  # shape: (sequence_length, num_envs, state_dim)
+        ret = torch.stack(states, dim=0)   # shape (sequence_length, num_envs, state_dim)
+        ret = ret.permute(1, 0, 2)  # shape (num_envs, sequence_length, state_dim)
+        return ret
 
     def ready(self) -> bool:
         """
@@ -87,10 +100,13 @@ class StateHistoryQueue:
             # 十分な情報がない場合はリセットされている = 健康状態モデルを強制的に使うとする
             return torch.ones((self.num_envs,), dtype=torch.bool, device=self.device)
         # 各環境について、直近max_length個のリセット情報を取得し、リセットがあった場合Trueにする
-        reseted_list = list(self.reseted_queue.queue)
-        reseted_tensor = torch.stack(reseted_list, dim=0).any(dim=0)
+        reseted_list = list(self.reseted_queue.queue)  # (seq_len, num_envs)
+        reseted_tensor = torch.stack(reseted_list, dim=0)
+        # print(f"reseted_tensor shape: {reseted_tensor}")
+        ret = reseted_tensor.any(dim=0).squeeze()
+        # print(f"after any{ret}")
         # 形状を (num_envs,) に統一
-        return reseted_tensor.squeeze()
+        return ret
 
 # fmt: off
 # [start-config-dict-torch]
@@ -152,9 +168,10 @@ class CustomParallelAgentTrainer(Trainer):
         self.joint_gru_net.load_state_dict(torch.load("joint_net_model.pth"))
         self.joint_gru_net.eval()
 
-        # これは後でいらなくなったら消してね
-        if self.num_simultaneous_agents != 19:
-            raise ValueError("len(Agents) must be same as joint number.")
+        self.classifier = EnvIdClassifier(self.num_envs)
+
+        if len(self.agents) != self.classifier.num_of_classes:
+            raise ValueError(f"Number of agents ({len(self.agents)}) does not match number of classes in EnvIdClassifier ({self.classifier.num_of_classes})")
 
         # init agents
         if self.num_simultaneous_agents > 1:
@@ -167,7 +184,7 @@ class CustomParallelAgentTrainer(Trainer):
         import os
         from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_ppo")
-        self.model_save_dir = os.path.join("trained_models",current_time)
+        self.model_save_dir = os.path.join(self.cfg["trained_model_save_path"],current_time)
         self.model_save_interval = 3000 # timesteps毎に保存
 
     def train(self) -> None:
@@ -234,36 +251,55 @@ class CustomParallelAgentTrainer(Trainer):
                 continue
 
             with torch.no_grad():
+                # 基本的に全てのテンソルは(num_envs, ...)の形状をしている事にする。
+                # で、record_transitionの時だけ、classify_by_shapeで各クラス毎に分割して渡す。
                 # shape (num_envs,)
                 reseted_mask = self.state_history_queue.get_reseted_tensor()
-                # get_state_sequence returns (seq_len, num_envs, state_dim), transpose to (num_envs, seq_len, state_dim)
-                state_seq = self.state_history_queue.get_state_sequence().transpose(0, 1)
+                state_seq = self.state_history_queue.get_state_sequence()
                 # shape (num_envs, 19)
-                joint_failure = (self.joint_gru_net(state_seq) > 0.6)
+                joint_failure = (self.joint_gru_net.forward(state_seq) > 0.6)
                 # リセットされてすぐの環境は全ての関節が健康だとする
                 joint_failure = joint_failure.masked_fill_(reseted_mask.unsqueeze(-1), False)
                 
-                # 各関節ごとに故障マスクテンソルを取得（id,tensor）
-                joint_mask_tensors : list[tuple[int, torch.Tensor]] = []
-                for joint_id in range(self.joint_num):
-                    # 関節iが故障している環境についてはTrue、そうでなければFalseのマスクテンソルを作成
-                    joint_mask = joint_failure[:, joint_id]  # shape: (num_envs,)
-                    joint_mask_tensors.append((joint_id, joint_mask))
+                # クラスごとに故障マスクテンソルを取得（id,tensor）
+                class_failure_mask_tensors : list[tuple[int, torch.Tensor]] = []
+                #  対応する関節のどれか1つが故障しているかを表すマスク(num_envs,)を得る。
+                #  このマスクはそのクラスに属さない環境は全てFalseになっている。
+                for class_id in range(self.classifier.num_of_classes):
+                    # ジョイント故障テンソル(env, joint_num)を、そのクラスに対応するジョイントが故障しているかどうかのマスクに変換する
+                    # 全環境サイズ(num_envs,)のマスクを作成
+                    num_envs = joint_failure.shape[0]
+                    class_failure_mask = torch.zeros(num_envs, dtype=torch.bool, device=joint_failure.device)
+
+                    # そのクラスに属する環境のマスクを取得
+                    class_mask = self.classifier.get_class_mask(class_id)
+
+                    # そのクラスのジョイントが故障しているかをチェック
+                    class_joint_failure = joint_failure[:, self.classifier.class_joint_id_list[class_id]].any(dim=1)
+
+                    # クラスに属する環境のうち、故障している環境のみをTrueに
+                    class_failure_mask[class_mask] = class_joint_failure[class_mask]
+
+                    class_failure_mask_tensors.append((class_id, class_failure_mask))
 
                 # まず健康状態エージェントで全環境のアクションを計算
                 health_actions = self.health_agent.act(states, timestep=timestep, timesteps=self.timesteps)[0]
 
-                # 各関節エージェントのアクションを計算（全環境分）
-                joint_actions_dict = {}
-                for joint_id in range(self.joint_num):
-                    agent = self.agents[joint_id]
-                    joint_actions_dict[joint_id] = agent.act(states, timestep=timestep, timesteps=self.timesteps)[0]
+                # 各クラスエージェントのアクションを計算（全環境分）
+                class_actions_list = [None for _ in range(self.classifier.num_of_classes)]
+                for class_id in range(self.classifier.num_of_classes):
+                    if class_failure_mask_tensors[class_id][1].any():
+                        agent = self.agents[class_id]
+                        class_actions_list[class_id] = agent.act(states, timestep=timestep, timesteps=self.timesteps)[0]
+                    else:
+                        # ない場合はとりあえずNoneにしとく
+                        class_actions_list[class_id] = None
 
                 # 最終的なアクションを決定（故障している関節のアクションを使用、それ以外は健康状態）
                 actions = health_actions.clone()
-                for joint_id, joint_mask in joint_mask_tensors:
-                    if joint_mask.any():
-                        actions[joint_mask] = joint_actions_dict[joint_id][joint_mask]
+                for class_id, class_failure_mask in class_failure_mask_tensors:
+                    if class_failure_mask.any():
+                        actions[class_failure_mask] = class_actions_list[class_id][class_failure_mask]
 
                 # step the environments
                 next_states, rewards, terminated, truncated, infos = self.env.step(actions)
@@ -273,44 +309,56 @@ class CustomParallelAgentTrainer(Trainer):
                     self.env.render()
 
                 # 各エージェントで遷移を記録（全環境分だが、故障していない環境の報酬は0）
-                for joint_id, joint_mask in joint_mask_tensors:
-                    # 故障している環境のみ報酬を付与
-                    masked_rewards = torch.zeros_like(rewards)
-                    if joint_mask.any():
-                        masked_rewards[joint_mask] = rewards[joint_mask]
+                # record_transitionを呼び出したエージェントのIDを記録
+                agents_with_transitions = []
+                for class_id, class_failure_mask in class_failure_mask_tensors:
+                    if class_failure_mask.any():
+                        # 全環境分の報酬を作成し、故障している環境のみ報酬を付与
+                        masked_rewards = torch.zeros_like(rewards)
+                        masked_rewards[class_failure_mask] = rewards[class_failure_mask]
 
-                    # 全環境保存してしまっているが、健康状態と他関節環境は報酬が0になっている。
-                    # 理想はそれぞれの環境で全て分けたいが、やり方が分からない。
-                    self.agents[joint_id].record_transition(
-                        states=states,
-                        actions=joint_actions_dict[joint_id],
-                        rewards=masked_rewards,
-                        next_states=next_states,
-                        terminated=terminated,
-                        truncated=truncated,
-                        infos=infos,
-                        timestep=timestep,
-                        timesteps=self.timesteps,
-                    )
+                        # 自クラス以外をマスクしたテンソルを取得（全環境分だが、他クラスは0）
+                        classified_states = self.classifier.mask_other_classes(class_id, states)
+                        classified_actions = self.classifier.mask_other_classes(class_id, class_actions_list[class_id])
+                        classified_rewards = self.classifier.mask_other_classes(class_id, masked_rewards)
+                        classified_next_states = self.classifier.mask_other_classes(class_id, next_states)
+                        classified_terminated = self.classifier.mask_other_classes(class_id, terminated)
+                        classified_truncated = self.classifier.mask_other_classes(class_id, truncated)
+
+                        self.agents[class_id].record_transition(
+                            states=classified_states,
+                            actions=classified_actions,
+                            rewards=classified_rewards,
+                            next_states=classified_next_states,
+                            terminated=classified_terminated,
+                            truncated=classified_truncated,
+                            infos=infos,
+                            timestep=timestep,
+                            timesteps=self.timesteps,
+                        )
+                        agents_with_transitions.append(class_id)
 
                 # log environment info (各エージェント固有の報酬をログ)
-                for joint_id, joint_mask in joint_mask_tensors:
+                for class_id, class_failure_mask in class_failure_mask_tensors:
                     # 故障している環境のみの平均報酬を計算
-                    if joint_mask.any():
-                        agent_mean_reward = rewards[joint_mask].mean().item()
-                        self.agents[joint_id].track_data(f"Reward / mean_reward", agent_mean_reward)
+                    if class_failure_mask.any():
+                        agent_mean_reward = rewards[class_failure_mask].mean().item()
+                        self.agents[class_id].track_data(f"Debug / mean_reward", agent_mean_reward)
                         # 故障している環境の数もログ
-                        self.agents[joint_id].track_data(f"Info / num_failure_envs", joint_mask.sum().item())
+                        self.agents[class_id].track_data(f"Debug / num_failure_envs", class_failure_mask.sum().item())
 
                 # 共通の環境情報もログ（オプション）
                 if self.environment_info in infos:
                     for k, v in infos[self.environment_info].items():
                         if isinstance(v, torch.Tensor) and v.numel() == 1:
                             # 各エージェントに個別にログするのではなく、最初のエージェントだけにログ
-                            self.agents[0].track_data(f"Info / {k}", v.item())
+                            # self.agents[0].track_data(f"Info / {k}", v.item())
+                            for agent in self.agents:
+                                agent.track_data(f"Info / {k}", v.item())
 
-            # post-interaction
-            for agent in self.agents:
+            # post-interaction (record_transitionを呼び出したエージェントのみ)
+            for class_id in agents_with_transitions:
+                agent = self.agents[class_id]
                 agent.post_interaction(timestep=timestep, timesteps=self.timesteps)
 
             # reset environments
@@ -442,4 +490,4 @@ class CustomParallelAgentTrainer(Trainer):
         import os
         os.makedirs(dir_path, exist_ok=True)
         for joint_id, agent in enumerate(self.agents):
-            agent.save(os.path.join(dir_path, f"agent_joint_{joint_id}"))
+            agent.save(os.path.join(dir_path, f"agent_joint_{joint_id}.pt"))

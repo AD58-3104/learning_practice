@@ -100,13 +100,14 @@ from isaaclab.utils.io import dump_pickle, dump_yaml
 from isaaclab_rl.skrl import SkrlVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
+from humanoidprac.tasks.manager_based.humanoidprac.mdp.events import EnvIdClassifier
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import humanoidprac.tasks  # noqa: F401
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append("../")
 sys.path.append("../../")
-import logger  # noqa: F401
+# import logger  # noqa: F401
 
 # config shortcuts
 algorithm = args_cli.algorithm.lower()
@@ -120,13 +121,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # jointの設定を上書きする
-    if args_cli.joint_cfg:
-        param = ast.literal_eval(args_cli.joint_cfg)
-        print(f"[INFO] Overriding joint configuration : {env_cfg.scene.robot.actuators['legs'].effort_limit}")
-        for joint_name, torque in param.items():
-            env_cfg.scene.robot.actuators["legs"].effort_limit[joint_name] = torque
-            print(f"[INFO] Overriding joint configuration with: {joint_name} -> {torque}Nm")
+    # jointの設定を上書きする これもランダムで掛けるやつなので必要無し
+    # if args_cli.joint_cfg:
+    #     param = ast.literal_eval(args_cli.joint_cfg)
+    #     print(f"[INFO] Overriding joint configuration : {env_cfg.scene.robot.actuators['legs'].effort_limit}")
+    #     for joint_name, torque in param.items():
+    #         env_cfg.scene.robot.actuators["legs"].effort_limit[joint_name] = torque
+    #         print(f"[INFO] Overriding joint configuration with: {joint_name} -> {torque}Nm")
 
     # multi-gpu training config
     if args_cli.distributed:
@@ -168,11 +169,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
     dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
-    joint_cfg_logger = logger.SettingLogger(env_cfg)
-    joint_cfg_logger.log_setting(os.path.join(log_dir, "joint_cfg.json"))
+    # 設定のログは必要なし
+    # joint_cfg_logger = logger.SettingLogger(env_cfg)
+    # joint_cfg_logger.log_setting(os.path.join(log_dir, "joint_cfg.json"))
 
     # get checkpoint path (to resume training)
-    resume_path = retrieve_file_path(args_cli.checkpoint) if args_cli.checkpoint else None
+    # resume_path = retrieve_file_path(args_cli.checkpoint) if args_cli.checkpoint else None
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -198,28 +200,96 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # 学習済みエージェントの読み込み
     target_agents = []
-    joint_num = 19
+    target_scopes = []
+    classifier = EnvIdClassifier(env.num_envs)
+    agent_num = classifier.num_of_classes
+    # 各クラスの環境数をscopeに設定
+    for class_id in range(agent_num):
+        target_scopes.append(classifier.get_class_envs(class_id))
 
-    import yaml
-    learned_model_conf = yaml.safe_load(open("learned_agent_cfg.yaml"))
     health_agent_model = "normal_agent.pt"
-    tmp_rn = Runner(env, learned_model_conf)
+    tmp_rn = Runner(env, agent_cfg)
     tmp_rn.agent.load(health_agent_model)
-
     # 健康状態モデルのエージェント
     health_agent = tmp_rn.agent
 
-    for _ in range(joint_num):
+    import copy
+    from skrl.utils.model_instantiators.torch import deterministic_model, gaussian_model, shared_model
+    from gymnasium.spaces import Box
+    from skrl.agents.torch.ppo import PPO
+    for class_id in range(agent_num):
         # エージェントをコンフィグから簡単に構築できるのがRunnerしか無いから使う
-        rn = Runner(env, learned_model_conf)
-        rn.agent.load(health_agent_model)
-        target_agents.append(rn.agent)
+        # ログを書き込む場所を別にしたいので、書き換える
+        tmp_agent_cfg = copy.deepcopy(agent_cfg)
+        tmp_agent_cfg["agent"]["experiment"]["experiment_name"] += f"_model_{class_id}"
+        from skrl.resources.schedulers.torch import KLAdaptiveRL
+        tmp_agent_cfg["agent"]["learning_rate_scheduler"] = KLAdaptiveRL  # こっちではちゃんとクラスを入れないとダメ
+        from skrl.memories.torch import RandomMemory
+        # memory_sizeが-1の場合、rolloutsの値を使う
+        memory_size = tmp_agent_cfg["memory"]["memory_size"]
+        if memory_size < 0:
+            memory_size = tmp_agent_cfg["agent"]["rollouts"]
+        memory = RandomMemory(
+            memory_size=memory_size,
+            num_envs= classifier.get_class_envs(class_id),  # memoryの環境数はクラス毎の環境数に合わせる必要がある
+            device=env.device,
+        )
+        # if classifier.get_class_envs(class_id) != target_scopes[class_id]:
+        #     raise ValueError(f"環境数の不整合があります。{classifier.get_class_envs(class_id)} != {target_scopes[class_id]}")
+        from numpy import float32
+        # 環境と同じ行動空間の次元を使う（health_agentとの互換性のため）
+        action_space = Box(low=-500.0, high=500.0, shape=env.action_space.shape, dtype=float32)
+        # models = {}
+        # models["policy"] = gaussian_model(
+        #                 observation_space=env.observation_space,
+        #                 action_space=action_space,
+        #                 device=env.device,
+        #                 **tmp_agent_cfg["models"]["policy"],
+        # )
+        # models["value"] = deterministic_model(
+        #                 observation_space=env.observation_space,
+        #                 action_space=action_space, 
+        #                 device=env.device,
+        #                 **tmp_agent_cfg["models"]["value"],
+        #             )
+        # # パラメータの初期化を行う
+        # models["policy"].init_state_dict("policy")
+        # models["value"].init_state_dict("value")
+        
+        # shared_modelsにはそれ用のinstantiatorがあるらしいぞ！
+        roles = ["policy", "value"]
+        structure = [tmp_agent_cfg["models"]["policy"]["class"], tmp_agent_cfg["models"]["value"]["class"]]
+        parameters = [tmp_agent_cfg["models"]["policy"], tmp_agent_cfg["models"]["value"]]
+        instance_shared_models = shared_model(
+            observation_space=env.observation_space,
+            action_space=action_space,
+            device=env.device,
+            structure=structure,
+            roles=roles,
+            parameters=parameters,
+        )
+        models = {}
+        models["policy"] = instance_shared_models
+        models["value"] = instance_shared_models
+        models["policy"].init_state_dict("policy")
+        models["value"].init_state_dict("value")
+        agent = PPO(
+            models=models,  # models dict
+            memory=memory,  # memory instance, or None if not required
+            cfg=tmp_agent_cfg["agent"],  # configuration dict (preprocessors, learning rate schedulers, etc.)
+            observation_space=env.observation_space,
+            action_space=action_space,
+            device=env.device,
+        )
+        agent.load(health_agent_model)  # 初期化は健康状態モデルで行う
+        target_agents.append(agent)
 
     from custom_parallel_trainer import CustomParallelAgentTrainer
     trainer = CustomParallelAgentTrainer(
         env=env,
         agents=target_agents,
         health_agent=health_agent,
+        # agents_scope=target_scopes,
         cfg=agent_cfg["trainer"],
     )
 
@@ -229,9 +299,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # sigintでもモデルを保存したいのでキャッチ
         print("\n[INFO] Training interrupted by user.")
     
-    current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_ppo")
-    trainer.save(os.path.join("trained_models",current_time))
-
     # close the simulator
     env.close()
 
