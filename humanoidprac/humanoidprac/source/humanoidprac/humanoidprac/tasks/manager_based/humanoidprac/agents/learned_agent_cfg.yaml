@@ -66,9 +66,9 @@ agent:
   time_limit_bootstrap: False
   # logging and checkpoint
   experiment:
-    directory: "h1_flat"
+    directory: "parallel_failure"
     experiment_name: ""
-    write_interval: auto
+    write_interval: 100
     checkpoint_interval: auto
 
 
@@ -76,5 +76,6 @@ agent:
 # https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
 trainer:
   class: SequentialTrainer
-  timesteps: 500000
+  timesteps: 400000
   environment_info: log
+  trained_model_save_path: trained_models

@@ -204,11 +204,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     from gymnasium.spaces import Discrete
 
     models = {}
-    models["policy"] = discrete_model.MLP(
-                    observation_space=env.observation_space,
-                    action_space=Discrete(2),  # 2つのモデルから選ぶ行動
-                    device=env.device,
-                    # **agent_cfg["models"]["policy"],
+    # models["policy"] = discrete_model.MLP(
+    #                 observation_space=env.observation_space,
+    #                 action_space=Discrete(2),  # 2つのモデルから選ぶ行動
+    #                 device=env.device,
+    #             )
+    models["policy"] = discrete_model.GRU(
+                observation_space=env.observation_space,
+                action_space=Discrete(2),  # 2つのモデルから選ぶ行動
+                device=env.device,
+                num_envs=env.num_envs,
+                sequence_length=6,  # 6ステップ分の履歴を考慮。
+                # これは、ロールアウトの時のステップ数と関連がある。rollout=24,mini_batches=4であれば、
+                # 6ステップ分の履歴まで考慮できる。6ステップの、それの約数だけが使える。
                 )
     models["value"] = deterministic_model(
                     observation_space=env.observation_space,
@@ -220,7 +228,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     from skrl.resources.schedulers.torch import KLAdaptiveRL
     agent_cfg["agent"]["learning_rate_scheduler"] = KLAdaptiveRL
 
-    from skrl.agents.torch.ppo import PPO
+    # from skrl.agents.torch.ppo import PPO
+    from skrl.agents.torch.ppo import PPO_RNN as PPO
     agent = PPO(
         models=models,  # models dict
         memory=memory,  # memory instance, or None if not required
@@ -230,6 +239,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         device=env.device,
     )
 
+    agent.init()
     # load checkpoint (if specified)
     agent.load(resume_path)
     # set agent to evaluation mode
@@ -238,8 +248,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     obs, _ = env.reset()
     timestep = 0
-
-    exp_val_logger = logger.ExperimentValueLogger(finish_step=3000)
+    target_envs = torch.arange(1,env.num_envs)  # 全ての環境のデータの平均値を取る
+    if args_cli.finish_step:
+        finish_step = args_cli.finish_step
+    exp_val_logger = logger.ExperimentValueLogger(finish_step=finish_step, log_file_name=os.path.join(log_dir, "play_log.csv"), target_envs=target_envs)
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()

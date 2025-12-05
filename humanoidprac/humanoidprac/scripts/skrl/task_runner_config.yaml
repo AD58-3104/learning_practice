@@ -204,6 +204,9 @@ experiments:
       joint_names: ["left_ankle"]
     - joint_torque: [360.0]
       joint_names: ["left_ankle"]   # 正常なやつ
+  exp3:
+    - joint_torque: [300.0]
+      joint_names: ["right_knee"]
 
 
 # 基本設定（必要に応じて調整）
@@ -213,7 +216,7 @@ base_config:
   directory: "h1_flat/joint_experiment_ver3"
   python_command: "/home/satoshi/learning_practice/IsaacLab/./isaaclab.sh -p"
   num_envs: 4096
-  exp_select: "exp2"
+  exp_select: "exp3"
 
 
 # ジョイントリスト

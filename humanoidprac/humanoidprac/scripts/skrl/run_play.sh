@@ -1,6 +1,6 @@
 #!/bin/bash
 dir=$1
-
+dir="${dir%/}"
 cat $dir/joint_cfg.json
 sleep 3
 source ~/.bash_functions

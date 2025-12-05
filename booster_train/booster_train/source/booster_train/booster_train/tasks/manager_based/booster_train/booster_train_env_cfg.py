@@ -81,22 +81,22 @@ BOOSTER_T1_CFG = ArticulationCfg(
     actuators={
         "legs": IdealPDActuatorCfg(
             joint_names_expr=[".*_Hip_.*", ".*_Knee_.*", ".*_Ankle_.*"],
-            effort_limit_sim={
-                ".*Hip_Pitch.*" : 45.0,
-                ".*Hip_Roll": 30.0,
-                ".*Hip_Yaw.*": 30.0,
-                ".*_Knee_Pitch": 60.0,
-                ".*_Ankle_Pitch": 24.0,
-                ".*_Ankle_Roll": 15.0,
-            },
-            velocity_limit_sim={
-                ".*Hip_Pitch.*" : 12.5, #rad/s
-                ".*Hip_Roll": 10.9,
-                ".*Hip_Yaw.*": 10.9,
-                ".*_Knee_Pitch": 11.7,
-                ".*_Ankle_Pitch": 18.8,
-                ".*_Ankle_Roll": 12.4,
-            },
+            # effort_limit_sim={
+            #     ".*Hip_Pitch.*" : 45.0,
+            #     ".*Hip_Roll": 30.0,
+            #     ".*Hip_Yaw.*": 30.0,
+            #     ".*_Knee_Pitch": 60.0,
+            #     ".*_Ankle_Pitch": 24.0,
+            #     ".*_Ankle_Roll": 15.0,
+            # },
+            # velocity_limit_sim={
+            #     ".*Hip_Pitch.*" : 12.5, #rad/s
+            #     ".*Hip_Roll": 10.9,
+            #     ".*Hip_Yaw.*": 10.9,
+            #     ".*_Knee_Pitch": 11.7,
+            #     ".*_Ankle_Pitch": 18.8,
+            #     ".*_Ankle_Roll": 12.4,
+            # },
             stiffness={
                 ".*Hip_Yaw.*": 200.0,
                 ".*Hip_Roll": 200.0,
@@ -170,26 +170,19 @@ class BoosterTrainSceneCfg(InteractiveSceneCfg):
 class CommandsCfg:
     """Command specifications for the MDP."""
 
-    # base_velocity = mdp.UniformVelocityCommandCfg(
-    #     asset_name="robot",
-    #     resampling_time_range=(10.0, 10.0),
-    #     rel_standing_envs=0.02,
-    #     rel_heading_envs=1.0,
-    #     heading_command=False,
-    #     heading_control_stiffness=0.5,
-    #     debug_vis=True,
-    #     ranges=mdp.UniformVelocityCommandCfg.Ranges(
-    #         lin_vel_x=(-0.0, 0.4), lin_vel_y=(-0.0, 0.1), ang_vel_z=(-0.0, 0.0), heading=(-math.pi, math.pi)
-    #     ),
-    # )
     base_velocity = mdp.CurriculumCommandCfg()
 
 @configclass
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    joint_effort = mdp.JointEffortActionCfg(asset_name="robot", joint_names=BOOSTER_T1_CFG.actuators["legs"].joint_names_expr , scale=100.0)
-
+    # joint_effort = mdp.JointEffortActionCfg(asset_name="robot", joint_names=BOOSTER_T1_CFG.actuators["legs"].joint_names_expr , scale=100.0)
+    joint_position = mdp.RelativeJointPositionActionCfg(
+                            asset_name="robot", 
+                            joint_names=[".*Ankle.*",".*Knee.*",".*Hip.*"],
+                            scale=1.0,
+                            # clip={".*" : (-1.1,1.1)}
+                            )
 
 @configclass
 class ObservationsCfg:
@@ -211,7 +204,8 @@ class ObservationsCfg:
                                        )
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel) # これはkinematicsとorientationから計算するらしい。多分stanceの順運動学からやるんだろ
         root_lin_vel_w = ObsTerm(func=mdp.root_lin_vel_w) # ワールド座標系での速度。これ現実でどうやって取るのか知らん。意味不明
-        actions = ObsTerm(func=mdp.last_action)
+        # actions = ObsTerm(func=mdp.last_action)
+        phase_info = ObsTerm(func=mdp.phase_infomation)
 
         def __post_init__(self) -> None:
             self.enable_corruption = False
@@ -301,21 +295,30 @@ class RewardsCfg:
 
     
     # dof_torques_l2 = RewTerm(func=mdp.joint_torques_l2, weight=-1.0e-5)
-    # dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-2.5e-7)
+    # dof_acc_l2 = RewTerm(func=mdp.joint_acc_l2, weight=-1e-8)
     # action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
     # -- optional penalties
     # flat_orientation_l2 = RewTerm(func=mdp.flat_orientation_l2, weight=0.0)
     # dof_pos_limits = RewTerm(func=mdp.joint_pos_limits, weight=0.0)
     
     # 姿勢に関する正則化項
-    pose_regularization = RewTerm(func=mdp.pose_regularization, weight=4.0)
+    pose_regularization = RewTerm(func=mdp.pose_regularization,
+                                  params = {"kernel_sensitivity":3.0},
+                                  weight=4.0)
     # コマンド追従
-    command_tracking = RewTerm(func=mdp.command_tracking,params = {"command_name":"base_velocity"}, weight=42.0)
+    command_tracking = RewTerm(func=mdp.command_tracking,
+                               params = {"command_name":"base_velocity","kernel_sensitivity":9.0}, 
+                               weight=42.0)
     # 長く生き残る方が報酬が高い
     # これはterminationsConfigの方で生き残り基準を設定する。基準はroll,pitch角度とbaseの高さが規定を満たす事
-    is_alive = RewTerm(func=mdp.is_alive, weight=1e-4 * 4)
+    is_alive = RewTerm(func=mdp.is_alive, weight= 4.0)
     # 足上げ高さに関する報酬
-    foot_clearance = RewTerm(func=mdp.foot_clearance,weight=18.0)
+    foot_clearance = RewTerm(func=mdp.foot_clearance,
+                             params = {"kernel_sensitivity": 10.0},
+                             weight=18.0 )
+    # foot_z_distance = RewTerm(func=mdp.foot_z_distance,weight=5.0)
+    # velocity_reguralize = RewTerm(func=mdp.velocity_reguralize,weight=1.0)
+    logger = RewTerm(func=mdp.logger,weight=0.1)
 
     # パラメータに関するメモ
     # 姿勢以外の値を大きくしたらめちゃくちゃ足を開いてしまった (これは論文の重みを見る前の試行の話)
@@ -327,7 +330,7 @@ class TerminationsCfg:
     # (1) Time out
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     root_height_below_minimum = DoneTerm(mdp.root_height_below_minimum,params={"minimum_height": 0.6})
-    bad_orientation = DoneTerm(mdp.bad_orientation,params={"limit_angle": 1.2}) # 120度くらいを超えたら終わり
+    bad_orientation = DoneTerm(mdp.bad_orientation,params={"limit_angle": 0.6}) # 度くらいを超えたら終わり
 
 
 ##

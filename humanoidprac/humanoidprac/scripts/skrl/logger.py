@@ -188,14 +188,17 @@ class ExperimentValueLogger:
 
 # NNの判別器を訓練するために利用する観測を保存するクラス
 class DiscriminatorObsDataLogger:
-    def __init__(self, log_file_name: str = "discriminator_obs.dat"):
+    def __init__(self, env: ManagerBasedRLEnv, log_file_name: str = "discriminator_obs.dat"):
         self.log_file_name = log_file_name
         self.log_file = open(log_file_name, 'w')
         print(f"[Discriminator Data Logger] Open logfile {log_file_name}")
-        self.log_file.write("step,observations\n")
+        obs_num = env.observation_space.shape[0]
+        obs_rep = ','.join([f"observation_{i}" for i in range(obs_num)])
+        self.log_file.write(f"step,terminated,{obs_rep}\n")
 
-    def log(self, step: int, observations: torch.Tensor):
-        self.log_file.write(f"{step},{','.join(map(str, observations[0].tolist()))}\n")
+    def log(self, step: int, observations: torch.Tensor, terminated: torch.Tensor, truncated: torch.Tensor):
+        term_or_trunc = terminated | truncated
+        self.log_file.write(f"{step},{term_or_trunc[0].item()},{','.join(map(str, observations[0].tolist()))}\n")
 
     def close(self):
         self.log_file.close()

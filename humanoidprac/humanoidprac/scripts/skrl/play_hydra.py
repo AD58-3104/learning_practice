@@ -196,6 +196,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         finish_step = args_cli.finish_step
     # デフォルト値は上のadd_argumentで3000にしている.
     exp_val_logger = logger.ExperimentValueLogger(finish_step=finish_step, log_file_name=os.path.join(log_dir, "play_log.csv"), target_envs=target_envs)
+    nn_disc_logger = logger.DiscriminatorObsDataLogger(env=env)
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -211,7 +212,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             else:
                 actions = outputs[-1].get("mean_actions", outputs[0])
             # env stepping
-            obs, _, _, _, _ = env.step(actions)
+            obs, _, terminated, truncated, _ = env.step(actions)
+            nn_disc_logger.log(env.common_step_counter,obs,terminated,truncated)
             if exp_val_logger.log(env):
                 print("終了ステップに到達しました。")
                 break

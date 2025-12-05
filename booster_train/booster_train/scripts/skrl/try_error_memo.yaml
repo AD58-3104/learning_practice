@@ -1,0 +1,37 @@
+
+try1:
+  pose_regularization_w : 4.0
+  command_tracking_w : 400.0
+  is_alive_w : 4e-4
+  foot_clearance_w : 50.0
+  # 足を少しだけプルプルさせて前に進む意思を見せた。今までで一番マシ
+try2:
+  pose_regularization_w : 4.0
+  command_tracking_w : 400.0
+  is_alive_w : 4e-4
+  foot_clearance_w : 50.0
+  foot_clearance_sensitivity : 1
+  foot_clearance_thre : 2000
+  # ダバダバするけど前よりはちゃんと進むようになった。try1よりマシ
+  # ここは当然foot_z_distanceなんて追加してない
+
+try3:
+  pose_regularization_w : 4.0
+  command_tracking_w : 400.0
+  is_alive_w : 4e-4
+  foot_clearance_w : 50.0
+  foot_clearance_sensitivity : 1
+  foot_clearance_thre : 2000
+  w_phi : 4.0 # 前は2.0
+  # 前よりは大胆な動きが見えた気もしなくはない。そんなに変化は無いが
+
+
+try4:
+  pose_regularization_w : 4.0
+  command_tracking_w : 400.0
+  is_alive_w : 4e-4
+  foot_clearance_w : 50.0
+  foot_clearance_sensitivity : 1
+  foot_clearance_thre : 2000
+  w_phi : 2.0 # 前は2.0
+  # foot_z_distanceを追加

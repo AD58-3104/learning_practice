@@ -9,7 +9,7 @@ import torch
 from typing import TYPE_CHECKING
 
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.envs.mdp import joint_vel
+from isaaclab.envs.mdp import joint_vel,last_action
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -21,8 +21,8 @@ def kernel_func(x:torch.tensor,sensitivity:float = 1.0) -> torch.Tensor:
     return 2 / ((torch.exp(-x * sensitivity) + torch.exp(x * sensitivity)))
 # sensitivityの値は今の所論文の数値を入れている
 
-
-def pose_regularization(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+# 論文の感度 3.0
+def pose_regularization(env: ManagerBasedRLEnv,kernel_sensitivity : float,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Regularization reward for the robot's pose."""
     """This function computes a regularization reward for the robot's pose. It penalizes the robot for deviating from its initial pose."""
     robot = env.scene[asset_cfg.name]
@@ -37,7 +37,7 @@ def pose_regularization(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scen
                         0.4, -0.25, 0.0], device=env.device)
     target_joint_indices = [robot.data.joint_names.index(name) for name in nominal_joint_names]
     foot_angles = joint_pos[:, target_joint_indices]
-    reward = kernel_func(torch.norm(foot_angles - nominal_joint_pos,p=2 ,dim=1),sensitivity = 3.0) * env.step_dt
+    reward = kernel_func(torch.norm(foot_angles - nominal_joint_pos,p=2 ,dim=1),kernel_sensitivity) * env.step_dt
     return reward
 
 global_Cf : torch.tensor = None  # foot_clearance用のCf。初期値は0.05
@@ -64,16 +64,17 @@ def getGlobalCv(env,pow : float = 0.95 ,init_value : float = 0.01):
     return global_Cv
 
 # メモ、bVbの方はbase link frameの速度、IVbはinertial reference frameの速度
-def command_tracking(env, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+# 論文の感度 9.0
+def command_tracking(env, command_name: str,kernel_sensitivity : float = 9.0, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     robot = env.scene[asset_cfg.name]
     command = env.command_manager.get_command(command_name)
-    xy_vel_w_err = command[:, :2] - robot.data.root_lin_vel_w[:, :2] # World frame linear velocity
-    xy_vel_b_err = command[:, :2] - robot.data.root_lin_vel_b[:, :2] # robot frame linear velocity
-    ang_vel_error = command[:, 2] - robot.data.root_ang_vel_w[:, 2]
+    xy_vel_w_err = command[:, 3:5] - robot.data.root_lin_vel_w[:, :2] # World frame linear velocity
+    xy_vel_b_err = command[:, 3:5] - robot.data.root_lin_vel_b[:, :2] # robot frame linear velocity
+    ang_vel_error = command[:, 5] - robot.data.root_ang_vel_w[:, 2]
     target = torch.cat([xy_vel_w_err,xy_vel_b_err,ang_vel_error.unsqueeze(1)],dim=1)
     norm = torch.norm(target, p=2, dim=1)
     Cv = getGlobalCv(env)
-    sum = Cv * (kernel_func(norm,sensitivity = 9.0).unsqueeze(1)) * env.step_dt
+    sum = Cv * (kernel_func(norm,kernel_sensitivity).unsqueeze(1)) * env.step_dt
     return sum.squeeze()
 
 def foot_z_distance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
@@ -89,8 +90,8 @@ def foot_z_distance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> 
     # return kernel_func( 1.0 / (foot_heights_left - foot_heights_right),sensitivity=0.2) * env.step_dt
     return torch.abs(foot_heights_left - foot_heights_right) * env.step_dt
 
-
-def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+# 論文の感度 10.0
+def foot_clearance(env,kernel_sensitivity : float,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Reward for the feet being above the ground."""
     robot = env.scene[asset_cfg.name]
     # 各インデックスの取得
@@ -113,7 +114,7 @@ def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> t
 
 
     # 何かの重み？(論文読んでも説明が無くて意味不明)
-    w_phi = 5.0
+    w_phi = 2.0
     # 目標の足上げ高さ?(論文読んでも説明が無くて意味不明)
     pz_des = 0.40
     swing_heights = torch.gather(foot_heights,dim=1,index=swing_leg_index.unsqueeze(1))     # torch.Size([4096, 1])
@@ -125,13 +126,13 @@ def foot_clearance(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> t
                                     foot_angles1,
                                     stance_heights * w_phi
                                     ],dim = 1) # torch.Size([4096, 4])
-
-    norm = torch.norm(target,p=2,dim=1)        # torch.Size([4096]) 
-    sum = getGlobalCf(env) * (kernel_func(norm,sensitivity = 3.0).unsqueeze(1)) * env.step_dt
+    norm = torch.norm(target,p=2,dim=1)        # torch.Size([4096])
+    # print(norm[:3])
+    sum = getGlobalCf(env) * (kernel_func(norm,kernel_sensitivity).unsqueeze(1)) * env.step_dt
     return sum.squeeze()
 
 # 平均に対して早すぎる関節があるときペナルティ
-def velocity_reguralize(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+def velocity_reguralize(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),kernel_sensitivity : float = 5.0) -> torch.Tensor:
     robot = env.scene[asset_cfg.name]
     target_names = [
                     "Left_Hip_Pitch","Left_Hip_Roll",
@@ -149,4 +150,13 @@ def velocity_reguralize(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"))
     diffs = torch.clamp(diffs,min=0.0)
     sum = torch.sum(diffs,dim=1) / 10.0
     # print(sum[:5])
-    return kernel_func(sum,sensitivity=5.0)*env.step_dt
+    return kernel_func(sum,kernel_sensitivity)*env.step_dt
+
+def logger(env,asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"))-> torch.Tensor:
+    real_action = env.action_manager.get_term("joint_position").processed_actions
+    # last_actionをそのまま使うとraw_actionsが返ってくる。馬鹿すぎる
+    # print("Logger print")
+    # print(real_action[:1])
+    # print(env.action_manager.action[:1]) スゴすぎるんだけど、これも普通にraw_actionsと同じ。嘘でしょ。
+    ret = torch.zeros(env.num_envs,device=env.device)
+    return ret

@@ -6,4 +6,4 @@ else
     torque=$1
 fi
 echo "Using joint torque limit: $torque"
-_labpython train.py --task Humanoidprac-discriminator --num_envs 8192 --headless env.events.change_random_joint_torque.params.joint_torque=[$torque]
+_labpython train.py --task Humanoidprac-discriminator --num_envs 8192 --headless env.events.change_random_joint_torque.params.joint_torque=[$torque] "${@:2}"

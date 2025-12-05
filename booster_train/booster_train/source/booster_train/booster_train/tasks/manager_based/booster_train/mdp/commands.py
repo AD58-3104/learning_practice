@@ -25,6 +25,7 @@ class CurriculumCommand(UniformVelocityCommand):
         self.cfg_curriculum = cfg
         self.started = False
         self.previous_command = torch.zeros(env.num_envs, 3, device=env.device)
+        self.previous_command[:,0] = cfg.vcore # 最初のコマンド用に設定しておく
         self.percent_calc = PercentileCalculator(env)
         super().__init__(cfg.init_config,env)
         # 拡張する
@@ -38,29 +39,38 @@ class CurriculumCommand(UniformVelocityCommand):
     def _update_command(self):
         super()._update_command()
         percent = self.percent_calc.update()
+        # print(f"prev_com {self.previous_command}")
+        # print(self.previous_command.shape)
         command_inter = (self.vel_command_b[:,3:6] - self.previous_command) * percent + self.previous_command
         self.vel_command_b[:,[3,4,5]] = command_inter
 
     def _resample(self, env_ids: Sequence[int]):
         current_step  = self.current_time / self.env_dt
-        if  (current_step > float(self.curriculum_start_step)):
+        if  (current_step >= float(self.curriculum_start_step)):
             percentile = float(current_step - self.curriculum_start_step) / float(self.curriculum_end_step - self.curriculum_start_step)
-            val = (percentile * self.cfg_curriculum.final_target_value) + self.cfg_curriculum.start_value
+            val = (percentile * self.cfg_curriculum.final_target_value)
+            x_high = (self.cfg_curriculum.final_target_value - self.cfg_curriculum.vcore) * percentile
             current_ranges = UniformVelocityCommandCfg.Ranges(
-                        lin_vel_x=(-val, val),
+                        lin_vel_x=(-val, x_high),
                         lin_vel_y=(-val, val),
                         ang_vel_z=(-val, val)
                     )
             self.cfg = self.cfg_curriculum.target_config.replace(ranges=current_ranges)
             if not self.started:
                 self.started = True
-                print("Start Changing velocity command config!!!")
-                print(self.cfg.ranges)
-                print(percentile)
-                print(val)
-                print(current_ranges)
+                # print("Start Changing velocity command config!!!")
+                # print(self.cfg.ranges)
+                # print(percentile)
+                # print(val)
+                # print(current_ranges)
+        # print("-------")
+        # print(f"current_step = {current_step}")
+        # print(f"range = {current_ranges}")
+        # print(f"resampling time = {self.cfg.resampling_time_range}")
+        # print(f"env_ids = {env_ids[:10]}")
         self.previous_command = self.vel_command_b[:,:3] # リサンプリング前に保存する
         super()._resample(env_ids)
+        self.vel_command_b[env_ids,0] += self.cfg_curriculum.vcore # リセットされたやつだけvcoreを足す
         self.percent_calc.reset(env_ids) #リサンプリングされた環境はリセットする
         # print(self.vel_command_b[:1,:])
 
@@ -88,8 +98,8 @@ class CurriculumCommandCfg(CommandTermCfg):
     """Configuration for the uniform velocity command generator."""
 
     class_type: type = CurriculumCommand
-    curriculum_start_step : int = 1000
-    curriculum_end_step : int = 7000
+    curriculum_start_step : int = 0
+    curriculum_end_step : int = 5000
     resampling_time_range =(20.0, 20.0)  # これは必要なので入れる。しかし下のやつと同じにしないとおかしくなるので注意
     # 一番最初からstart_stepまで利用するconfig
     init_config : UniformVelocityCommandCfg = UniformVelocityCommandCfg(
@@ -105,8 +115,8 @@ class CurriculumCommandCfg(CommandTermCfg):
                         lin_vel_y=(0.0, 0.0), 
                         ang_vel_z=(0.0, 0.0)
                     ))
-    # start_step直後の値
-    start_value : float = 0.2
+
+    vcore : float = 0.4
     # 目標値
     final_target_value : float = 0.6
 
