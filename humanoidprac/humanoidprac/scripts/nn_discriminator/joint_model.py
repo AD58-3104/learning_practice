@@ -27,10 +27,10 @@ class JointGRUNet(nn.Module):
             nn.Sigmoid()
         )
 
-    def forward(self, x):
+    def forward(self, x, hidden=None):
         # x: (batch, sequence, input_size) when batch_first=True
-        out, _ = self.gru(x)
+        out, next_hidden = self.gru(x, hidden)
         # out: (batch, sequence, hidden_size) when batch_first=True
         out = self.fc(out[:, -1, :])  # 全バッチの最後のタイムステップを使用
-        return out
+        return out, next_hidden
     
