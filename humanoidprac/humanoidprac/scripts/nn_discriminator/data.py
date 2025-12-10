@@ -5,6 +5,7 @@ import setting
 from pathlib import Path
 import typing
 from typing import TextIO
+import tqdm
 
 class DataMerger:
     def __init__(self, output_dir="processed_data"):
@@ -26,6 +27,7 @@ class DataMerger:
         self.output_observations_savefile_name = output_file_name + "_data.csv"
         self.output_labels = []
         self.output_observations = []
+        print(f"Processing files: {obs_data_path}, {event_data_path}")
 
     def process(self):
         obs_data = pd.read_csv(self.obs_data_fd)
@@ -44,7 +46,9 @@ class DataMerger:
                 event_dict[step] = []
             event_dict[step].append(joint_id)
 
-        label = [0 for _ in range(setting.WHOLE_JOINT_NUM)]
+        # 初期化用のラベル（全関節0）
+        zero_label = [0 for _ in range(setting.WHOLE_JOINT_NUM)]
+        label = zero_label.copy()
         for obs in obs_data.itertuples():
             step = int(obs.step)
 
@@ -63,7 +67,7 @@ class DataMerger:
             if obs.terminated:
                 self.save_to_files()
                 # ラベルをリセットして次のエピソードへ
-                label = [0 for _ in range(setting.WHOLE_JOINT_NUM)]
+                label = zero_label.copy()
 
         self.save_to_files()  # 最後に残ったデータを保存（最後のエピソード）
 

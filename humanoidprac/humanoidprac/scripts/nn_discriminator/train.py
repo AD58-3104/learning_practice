@@ -2,6 +2,7 @@ import torch
 import data
 import time
 from torch.utils.tensorboard import SummaryWriter
+import setting
 
 class Trainer:
     def __init__(self, model):
@@ -15,7 +16,7 @@ class Trainer:
     def train_step(self, inputs, targets):
         self.model.train()
         self.optimizer.zero_grad()
-        outputs = self.model(inputs)
+        outputs, _ = self.model(inputs)
         loss = self.error_function(outputs, targets)
         loss.backward()
         self.optimizer.step()
@@ -36,17 +37,17 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    from model import JointNet, JointGRUNet
+    from joint_model import JointGRUNet
     import argparse
 
     parser = argparse.ArgumentParser(description="Train a joint network model")
     parser.add_argument("--epoch", type=int, default=10, help="Number of training epochs")
     args = parser.parse_args()
 
-    sequence_length = 10
-    input_size = 69    # 観測は69次元
-    hidden_size = 128
-    output_size = 19   # 19個の関節それぞれに故障があるかどうかを判断
+    sequence_length = setting.SEQUENCE_LENGTH
+    input_size = setting.OBS_DIMENSION    # 観測は88次元
+    hidden_size = setting.HIDDEN_SIZE
+    output_size = setting.WHOLE_JOINT_NUM   # 19個の関節それぞれに故障があるかどうかを判断
 
     datasets = data.JointDataset(data_dir="processed_data",sequence_length=sequence_length,device="cuda")
     dataloader = torch.utils.data.DataLoader(datasets, batch_size=32,shuffle=True,collate_fn=data.collate_episodes)
