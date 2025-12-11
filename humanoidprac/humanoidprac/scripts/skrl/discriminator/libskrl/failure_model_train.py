@@ -214,7 +214,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     health_agent = tmp_rn.agent
 
     import copy
-    from skrl.utils.model_instantiators.torch import deterministic_model, gaussian_model, shared_model
+    from skrl.utils.model_instantiators.torch import shared_model
     from gymnasium.spaces import Box
     from skrl.agents.torch.ppo import PPO
     for class_id in range(agent_num):
@@ -239,22 +239,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         from numpy import float32
         # 環境と同じ行動空間の次元を使う（health_agentとの互換性のため）
         action_space = Box(low=-500.0, high=500.0, shape=env.action_space.shape, dtype=float32)
-        # models = {}
-        # models["policy"] = gaussian_model(
-        #                 observation_space=env.observation_space,
-        #                 action_space=action_space,
-        #                 device=env.device,
-        #                 **tmp_agent_cfg["models"]["policy"],
-        # )
-        # models["value"] = deterministic_model(
-        #                 observation_space=env.observation_space,
-        #                 action_space=action_space, 
-        #                 device=env.device,
-        #                 **tmp_agent_cfg["models"]["value"],
-        #             )
-        # # パラメータの初期化を行う
-        # models["policy"].init_state_dict("policy")
-        # models["value"].init_state_dict("value")
         
         # shared_modelsにはそれ用のinstantiatorがあるらしいぞ！
         roles = ["policy", "value"]
@@ -289,7 +273,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env=env,
         agents=target_agents,
         health_agent=health_agent,
-        # agents_scope=target_scopes,
+        agents_scope=target_scopes,
         cfg=agent_cfg["trainer"],
     )
 

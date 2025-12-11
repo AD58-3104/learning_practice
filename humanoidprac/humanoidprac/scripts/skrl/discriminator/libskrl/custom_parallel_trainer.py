@@ -15,6 +15,7 @@ from skrl.trainers.torch import Trainer
 
 sys.path.append("../../../nn_discriminator")
 from joint_model import JointGRUNet
+import setting as nn_setting
 
 class AgentModelLoader:
     def __init__(self, model_path: str, yaml_conf_path: str, env):
@@ -108,6 +109,69 @@ class StateHistoryQueue:
         # 形状を (num_envs,) に統一
         return ret
 
+class FailureHistoryQueue:
+    """
+    関節故障履歴キュー
+    これは関節の故障履歴を保持し、指定されたシーケンス長に渡って故障しているかどうかを判定するために利用される
+    """
+    def __init__(self, max_length: int, num_envs: int, joint_num: int, device: str = "cuda"):
+        self.max_length = max_length
+        self.num_envs = num_envs
+        self.joint_num = joint_num
+        self.device = device
+        self.queue = queue.Queue(maxsize=max_length)
+
+        # その環境で故障が発生しているかどうかを保持するテンソル。これはエピソードに渡って保持される
+        self.failure_history_mask = torch.zeros((num_envs, self.joint_num), dtype=torch.bool, device=device)
+
+    def append_failure(self, failure: torch.Tensor):
+        # failure shape: (num_envs, joint_num)
+        if self.queue.full():
+            self.queue.get()
+        self.queue.put(failure)
+
+    def _get_current_failure_tensor(self) -> torch.Tensor:
+        """
+        直近sequence_length分の故障情報から、各環境の各関節が故障しているかどうかを示すtensorを返す
+        """
+        failures = list(self.queue.queue)
+        ret = torch.stack(failures, dim=0)   # shape (sequence_length, num_envs, joint_num)
+        ret = ret.permute(1, 0, 2)  # shape (num_envs, sequence_length, joint_num)
+        return torch.all(ret, dim=1) # shape (num_envs, joint_num)
+
+    def get_failure_joints(self) -> torch.Tensor:
+        """
+        今現在の故障状態マスクを返す。これは一度故障判定されたら、その環境がリセットされるまでTrueのまあ維持される
+        shape(num_envs, joint_num)
+        """
+        failure_mask = self._get_current_failure_tensor()
+        # 直近10回の履歴から壊れていると判断するマスク
+        current_failure_mask = failure_mask.any(dim=1)  # shape(num_envs,)
+        # 一度Trueになった環境はリセットされるまでTrueを維持する
+        current_failure_mask[self.failure_history_mask.any(dim=1)] = False
+
+        # 直近10回の履歴から壊れていると判断するマスクを用いて故障履歴マスクを更新する
+        # これはまだTrueになっていない環境についてのみ更新する
+        # shape(num_envs, joint_num) = shape(num_envs, joint_num)
+        self.failure_history_mask[current_failure_mask] = failure_mask[current_failure_mask]
+        return self.failure_history_mask
+
+    def ready(self) -> bool:
+        """
+        故障履歴が全て埋まっているかどうかを調べる。
+        これがFalseな場合は強制的に健康モデルで動かす
+        """
+        return self.queue.full()
+    
+    def set_reseted(self, reseted: torch.Tensor):
+        """
+        環境がリセットされた場合、その環境の故障状態をリセットする
+        :param reseted: shape(num_envs,)のboolテンソル。リセットされた環境はFalseになる
+        """
+        self.failure_history_mask = self.failure_history_mask.masked_fill(reseted, False)
+
+
+
 # fmt: off
 # [start-config-dict-torch]
 CUSTOM_TRAINER_DEFAULT_CONFIG = {
@@ -157,14 +221,17 @@ class CustomParallelAgentTrainer(Trainer):
         # 健康状態で動かすためのエージェント。これはactしか使わない
         self.health_agent = health_agent
 
-        self.joint_num = 19  # ヒューマノイドの関節数
+        self.joint_num = nn_setting.WHOLE_JOINT_NUM  # ヒューマノイドの関節数
 
         # 状態履歴キューの初期化 これの長さはGRUのsequence_lengthに合わせる。なので10
-        self.state_history_queue = StateHistoryQueue(max_length=10,num_envs=self.num_envs, device=self.device)
+        self.state_history_queue = StateHistoryQueue(max_length=nn_setting.SEQUENCE_LENGTH,num_envs=self.num_envs, device=self.device)
+
+        # 故障履歴キューの初期化 これの長さはGRUのsequence_lengthに合わせる。なので10
+        self.failure_history_queue = FailureHistoryQueue(max_length=nn_setting.SEQUENCE_LENGTH,num_envs=self.num_envs, joint_num=self.joint_num, device=self.device)
         
         # JointGRUNetモデルの読み込み
         # このモデルは出力を outputs > 0.6で二値化する必要があるので注意
-        self.joint_gru_net = JointGRUNet(input_size=69, hidden_size=128, output_size=self.joint_num).to("cuda")
+        self.joint_gru_net = JointGRUNet(input_size=nn_setting.OBS_DIMENSION, hidden_size=nn_setting.HIDDEN_SIZE, output_size=self.joint_num).to("cuda")
         self.joint_gru_net.load_state_dict(torch.load("joint_net_model.pth"))
         self.joint_gru_net.eval()
 
@@ -219,6 +286,12 @@ class CustomParallelAgentTrainer(Trainer):
 
         # reset env
         states, infos = self.env.reset()
+        
+        # 最初に故障履歴キューを全てFalseで埋めておく
+        for _ in range(self.failure_history_queue.max_length):
+            self.failure_history_queue.append_failure(torch.zeros((self.num_envs, self.joint_num), dtype=torch.bool, device=self.device))
+
+        hidden_states = None # 隠れ層
 
         for timestep in tqdm.tqdm(
             range(self.initial_timestep, self.timesteps), disable=self.disable_progressbar, file=sys.stdout
@@ -257,9 +330,18 @@ class CustomParallelAgentTrainer(Trainer):
                 reseted_mask = self.state_history_queue.get_reseted_tensor()
                 state_seq = self.state_history_queue.get_state_sequence()
                 # shape (num_envs, 19)
-                joint_failure = (self.joint_gru_net.forward(state_seq) > 0.6)
+                joint_failure, hidden_states = (self.joint_gru_net(state_seq, hidden_states))
+                joint_failure = (joint_failure > 0.6).long()  # 故障判定を二値化
+                print(joint_failure)
+
                 # リセットされてすぐの環境は全ての関節が健康だとする
                 joint_failure = joint_failure.masked_fill_(reseted_mask.unsqueeze(-1), False)
+                self.failure_history_queue.append_failure(joint_failure)
+                failure_joints_list = self.failure_history_queue.get_failure_joints()
+
+                if joint_failure[0].any() or joint_failure[1].any():
+                    print(f"[DEBUG::train()] timestep {timestep} joint failure detected: {joint_failure[0]}")
+                    print(f"[DEBUG::train()] reseted_mask: {reseted_mask[0]}")
                 
                 # クラスごとに故障マスクテンソルを取得（id,tensor）
                 class_failure_mask_tensors : list[tuple[int, torch.Tensor]] = []
@@ -268,14 +350,14 @@ class CustomParallelAgentTrainer(Trainer):
                 for class_id in range(self.classifier.num_of_classes):
                     # ジョイント故障テンソル(env, joint_num)を、そのクラスに対応するジョイントが故障しているかどうかのマスクに変換する
                     # 全環境サイズ(num_envs,)のマスクを作成
-                    num_envs = joint_failure.shape[0]
-                    class_failure_mask = torch.zeros(num_envs, dtype=torch.bool, device=joint_failure.device)
+                    num_envs = failure_joints_list.shape[0]
+                    class_failure_mask = torch.zeros(num_envs, dtype=torch.bool, device=failure_joints_list.device)
 
                     # そのクラスに属する環境のマスクを取得
                     class_mask = self.classifier.get_class_mask(class_id)
 
                     # そのクラスのジョイントが故障しているかをチェック
-                    class_joint_failure = joint_failure[:, self.classifier.class_joint_id_list[class_id]].any(dim=1)
+                    class_joint_failure = failure_joints_list[:, self.classifier.class_joint_id_list[class_id]].any(dim=1)
 
                     # クラスに属する環境のうち、故障している環境のみをTrueに
                     class_failure_mask[class_mask] = class_joint_failure[class_mask]
@@ -362,14 +444,19 @@ class CustomParallelAgentTrainer(Trainer):
                 agent.post_interaction(timestep=timestep, timesteps=self.timesteps)
 
             # reset environments
-            if terminated.any() or truncated.any():
+            reseted_tensor = terminated | truncated
+            if reseted_tensor.any():
                 with torch.no_grad():
                     states, infos = self.env.reset()
+                    not_reseted = reseted_tensor.bool().logical_not().float()
+                    mask = not_reseted.view(1, self.num_envs, 1)
+                    hidden_states = hidden_states * mask
+                    print(f"[DEBUG] timestep {timestep} environments reset: {reseted_tensor}")
             else:
                 states = next_states
             # リセット状態を状態履歴キューに追加
-            reseted_tensor = terminated | truncated
             self.state_history_queue.append_reseted(reseted_tensor)
+            self.failure_history_queue.set_reseted(reseted_tensor)
 
             # モデルの定期保存
             if (timestep + 1) % self.model_save_interval == 0:
