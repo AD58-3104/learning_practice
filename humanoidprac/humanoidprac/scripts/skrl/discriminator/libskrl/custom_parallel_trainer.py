@@ -39,13 +39,22 @@ class AgentModelLoader:
         from skrl.utils.runner.torch import Runner
         rn = Runner(self.env, self.yaml_conf)
         print(f"[INFO] Loading agents from directory: {model_path}")
+        model_pathes = self.get_model_pathes(model_path)
+        for path in model_pathes:
+            rn.agent.load(path)
+            self.agents.append(rn.agent)
+    
+    @staticmethod
+    def get_model_pathes(model_path: str) -> List[str]:
         import os
         import re
         files = os.listdir(model_path)
-        sorted_files = sorted(files, key=lambda x: int(re.search(r'_(\d+)\.', x).group(1)))
-        for file_name in sorted_files:
-            rn.agent.load(os.path.join(self.model_path, file_name))
-            self.agents.append(rn.agent)
+        sorted_filenames = sorted(files, key=lambda x: int(re.search(r'_(\d+)\.', x).group(1)))
+        file_paths = []
+        for filename in sorted_filenames:
+            file_paths.append(os.path.join(model_path, filename))
+        return file_paths
+
 
     def get_agents(self) -> List[Agent]:
         """
@@ -285,8 +294,9 @@ class CustomParallelAgentTrainer(Trainer):
             return
 
         # reset env
-        states, infos = self.env.reset()
-        
+        policy_states, infos = self.env.reset()
+        states = self.env.obs_buf['state']  # 観測はobs_bufから'state'を取り出してそれを使うようにする
+
         # 最初に故障履歴キューを全てFalseで埋めておく
         for _ in range(self.failure_history_queue.max_length):
             self.failure_history_queue.append_failure(torch.zeros((self.num_envs, self.joint_num), dtype=torch.bool, device=self.device))
@@ -309,16 +319,22 @@ class CustomParallelAgentTrainer(Trainer):
                 # ここに入るのは最初のsequense_length個のステップだけ
                 with torch.no_grad():
                     # health_agentはinitの中でevalになっていて、その後trainには切り替えないのでこのままで良い
-                    actions = self.health_agent.act(states, timestep=timestep, timesteps=self.timesteps)[0]
-                    next_states, _, terminated, truncated, _ = self.env.step(actions)
+                    actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+                    # GRUに推論させて、隠れ層を更新する
+                    _, next_hidden_states = self.joint_gru_net(states, hidden_states)
+                    hidden_states = next_hidden_states
+                    next_policy_states, _, terminated, truncated, _ = self.env.step(actions)
+                    next_states = self.env.obs_buf['state'] # 観測はobs_bufから'state'を取り出してそれを使うようにする
                     # 面倒なのでログは飛ばす
                     # 訓練も当然しない
                     # reset environments
                     if terminated.any() or truncated.any():
                         with torch.no_grad():
-                            states, infos = self.env.reset()
+                            policy_states, infos = self.env.reset()
+                            states = self.env.obs_buf['state']  # 観測はobs_bufから'state'を取り出してそれを使うようにする
                     else:
                         states = next_states
+                        policy_states = next_policy_states
                     reseted_tensor = terminated | truncated
                     self.state_history_queue.append_reseted(reseted_tensor)
                 continue
@@ -328,20 +344,19 @@ class CustomParallelAgentTrainer(Trainer):
                 # で、record_transitionの時だけ、classify_by_shapeで各クラス毎に分割して渡す。
                 # shape (num_envs,)
                 reseted_mask = self.state_history_queue.get_reseted_tensor()
-                state_seq = self.state_history_queue.get_state_sequence()
+                # state_seq = self.state_history_queue.get_state_sequence()
                 # shape (num_envs, 19)
-                joint_failure, hidden_states = (self.joint_gru_net(state_seq, hidden_states))
+                joint_failure, hidden_states = (self.joint_gru_net(states, hidden_states))
                 joint_failure = (joint_failure > 0.6).long()  # 故障判定を二値化
-                print(joint_failure)
+
 
                 # リセットされてすぐの環境は全ての関節が健康だとする
                 joint_failure = joint_failure.masked_fill_(reseted_mask.unsqueeze(-1), False)
                 self.failure_history_queue.append_failure(joint_failure)
                 failure_joints_list = self.failure_history_queue.get_failure_joints()
 
-                if joint_failure[0].any() or joint_failure[1].any():
-                    print(f"[DEBUG::train()] timestep {timestep} joint failure detected: {joint_failure[0]}")
-                    print(f"[DEBUG::train()] reseted_mask: {reseted_mask[0]}")
+                # if failure_joints_list.any():
+                    # print(f"[DEBUG::train()] timestep {timestep} joint failure detected: {failure_joints_list}")
                 
                 # クラスごとに故障マスクテンソルを取得（id,tensor）
                 class_failure_mask_tensors : list[tuple[int, torch.Tensor]] = []
@@ -365,14 +380,14 @@ class CustomParallelAgentTrainer(Trainer):
                     class_failure_mask_tensors.append((class_id, class_failure_mask))
 
                 # まず健康状態エージェントで全環境のアクションを計算
-                health_actions = self.health_agent.act(states, timestep=timestep, timesteps=self.timesteps)[0]
+                health_actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
 
                 # 各クラスエージェントのアクションを計算（全環境分）
                 class_actions_list = [None for _ in range(self.classifier.num_of_classes)]
                 for class_id in range(self.classifier.num_of_classes):
                     if class_failure_mask_tensors[class_id][1].any():
                         agent = self.agents[class_id]
-                        class_actions_list[class_id] = agent.act(states, timestep=timestep, timesteps=self.timesteps)[0]
+                        class_actions_list[class_id] = agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
                     else:
                         # ない場合はとりあえずNoneにしとく
                         class_actions_list[class_id] = None
@@ -384,7 +399,8 @@ class CustomParallelAgentTrainer(Trainer):
                         actions[class_failure_mask] = class_actions_list[class_id][class_failure_mask]
 
                 # step the environments
-                next_states, rewards, terminated, truncated, infos = self.env.step(actions)
+                next_policy_states, rewards, terminated, truncated, infos = self.env.step(actions)
+                next_states = self.env.obs_buf['state']  # 観測はobs_bufから'state'を取り出してそれを使うようにする
 
                 # render scene
                 if not self.headless:
@@ -400,10 +416,10 @@ class CustomParallelAgentTrainer(Trainer):
                         masked_rewards[class_failure_mask] = rewards[class_failure_mask]
 
                         # 自クラス以外をマスクしたテンソルを取得（全環境分だが、他クラスは0）
-                        classified_states = self.classifier.mask_other_classes(class_id, states)
+                        classified_states = self.classifier.mask_other_classes(class_id, policy_states)
                         classified_actions = self.classifier.mask_other_classes(class_id, class_actions_list[class_id])
                         classified_rewards = self.classifier.mask_other_classes(class_id, masked_rewards)
-                        classified_next_states = self.classifier.mask_other_classes(class_id, next_states)
+                        classified_next_states = self.classifier.mask_other_classes(class_id, next_policy_states)
                         classified_terminated = self.classifier.mask_other_classes(class_id, terminated)
                         classified_truncated = self.classifier.mask_other_classes(class_id, truncated)
 
@@ -447,13 +463,15 @@ class CustomParallelAgentTrainer(Trainer):
             reseted_tensor = terminated | truncated
             if reseted_tensor.any():
                 with torch.no_grad():
-                    states, infos = self.env.reset()
+                    policy_states, infos = self.env.reset()
+                    states = self.env.obs_buf['state'] # 観測はobs_bufから'state'を取り出してそれを使うようにする
                     not_reseted = reseted_tensor.bool().logical_not().float()
                     mask = not_reseted.view(1, self.num_envs, 1)
                     hidden_states = hidden_states * mask
-                    print(f"[DEBUG] timestep {timestep} environments reset: {reseted_tensor}")
+                    # print(f"[DEBUG] timestep {timestep} environments reset: {reseted_tensor}")
             else:
                 states = next_states
+                policy_states = next_policy_states
             # リセット状態を状態履歴キューに追加
             self.state_history_queue.append_reseted(reseted_tensor)
             self.failure_history_queue.set_reseted(reseted_tensor)
@@ -494,8 +512,10 @@ class CustomParallelAgentTrainer(Trainer):
                 self.multi_agent_eval()
             return
 
+        hidden_states = None  # 隠れ層
         # reset env
-        states, infos = self.env.reset()
+        policy_states, infos = self.env.reset()
+        states = self.env.obs_buf['state']  # 観測はobs_bufから'state'を取り出してそれを使うようにする
 
         for timestep in tqdm.tqdm(
             range(self.initial_timestep, self.timesteps), disable=self.disable_progressbar, file=sys.stdout
@@ -508,63 +528,110 @@ class CustomParallelAgentTrainer(Trainer):
                 # ここに入るのは最初のsequense_length個のステップだけ
                 with torch.no_grad():
                     # health_agentはinitの中でevalになっていて、その後trainには切り替えないのでこのままで良い
-                    actions = self.health_agent.act(states, timestep=timestep, timesteps=self.timesteps)[0]
-                    next_states, _, terminated, truncated, _ = self.env.step(actions)
+                    actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+                    # GRUに推論させて、隠れ層を更新する
+                    _, next_hidden_states = self.joint_gru_net(states, hidden_states)
+                    hidden_states = next_hidden_states
+                    next_policy_states, _, terminated, truncated, _ = self.env.step(actions)
+                    next_states = self.env.obs_buf['state'] # 観測はobs_bufから'state'を取り出してそれを使うようにする
                     # 面倒なのでログは飛ばす
                     # 訓練も当然しない
                     # reset environments
                     if terminated.any() or truncated.any():
                         with torch.no_grad():
-                            states, infos = self.env.reset()
+                            policy_states, infos = self.env.reset()
+                            states = self.env.obs_buf['state']  # 観測はobs_bufから'state'を取り出してそれを使うようにする
                     else:
                         states = next_states
+                        policy_states = next_policy_states
                     reseted_tensor = terminated | truncated
                     self.state_history_queue.append_reseted(reseted_tensor)
                 continue
 
             with torch.no_grad():
+                # 基本的に全てのテンソルは(num_envs, ...)の形状をしている事にする。
+                # で、record_transitionの時だけ、classify_by_shapeで各クラス毎に分割して渡す。
                 # shape (num_envs,)
                 reseted_mask = self.state_history_queue.get_reseted_tensor()
-                # get_state_sequence returns (seq_len, num_envs, state_dim), transpose to (num_envs, seq_len, state_dim)
-                state_seq = self.state_history_queue.get_state_sequence().transpose(0, 1)
+                # state_seq = self.state_history_queue.get_state_sequence()
                 # shape (num_envs, 19)
-                joint_failure = (self.joint_gru_net(state_seq) > 0.6).to(torch.bool)
+                joint_failure, hidden_states = (self.joint_gru_net(states, hidden_states))
+                joint_failure = (joint_failure > 0.6).long()  # 故障判定を二値化
+
+
                 # リセットされてすぐの環境は全ての関節が健康だとする
                 joint_failure = joint_failure.masked_fill_(reseted_mask.unsqueeze(-1), False)
-                
-                # 各関節ごとに故障マスクテンソルを取得（id,tensor）
-                joint_mask_tensors : list[tuple[int, torch.Tensor]] = []
-                for joint_id in range(self.joint_num):
-                    # 関節iが故障している環境についてはTrue、そうでなければFalseのマスクテンソルを作成
-                    joint_mask = joint_failure[:, joint_id]  # shape: (num_envs,)
-                    joint_mask_tensors.append((joint_id, joint_mask))
+                self.failure_history_queue.append_failure(joint_failure)
+                failure_joints_list = self.failure_history_queue.get_failure_joints()
 
-                # compute actions
-                actions = torch.zeros((self.num_envs, self.env.action_space.shape[0]), device=self.device)
-                for joint_id, joint_mask in joint_mask_tensors:
-                    agent = self.agents[joint_id]
-                    if joint_mask.any():
-                        # 故障している環境については対応する関節に応じたエージェントで行動を計算
-                        actions[joint_mask] = agent.act(
-                            states[joint_mask], timestep=timestep, timesteps=self.timesteps
-                        )[0]
+                # if failure_joints_list.any():
+                    # print(f"[DEBUG::train()] timestep {timestep} joint failure detected: {failure_joints_list}")
+                
+                # クラスごとに故障マスクテンソルを取得（id,tensor）
+                class_failure_mask_tensors : list[tuple[int, torch.Tensor]] = []
+                #  対応する関節のどれか1つが故障しているかを表すマスク(num_envs,)を得る。
+                #  このマスクはそのクラスに属さない環境は全てFalseになっている。
+                for class_id in range(self.classifier.num_of_classes):
+                    # ジョイント故障テンソル(env, joint_num)を、そのクラスに対応するジョイントが故障しているかどうかのマスクに変換する
+                    # 全環境サイズ(num_envs,)のマスクを作成
+                    num_envs = failure_joints_list.shape[0]
+                    class_failure_mask = torch.zeros(num_envs, dtype=torch.bool, device=failure_joints_list.device)
+
+                    # そのクラスに属する環境のマスクを取得
+                    class_mask = self.classifier.get_class_mask(class_id)
+
+                    # そのクラスのジョイントが故障しているかをチェック
+                    class_joint_failure = failure_joints_list[:, self.classifier.class_joint_id_list[class_id]].any(dim=1)
+
+                    # クラスに属する環境のうち、故障している環境のみをTrueに
+                    class_failure_mask[class_mask] = class_joint_failure[class_mask]
+
+                    class_failure_mask_tensors.append((class_id, class_failure_mask))
+
+
+                # まず健康状態エージェントで全環境のアクションを計算
+                health_actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+
+                # 各クラスエージェントのアクションを計算（全環境分）
+                class_actions_list = [None for _ in range(self.classifier.num_of_classes)]
+                for class_id in range(self.classifier.num_of_classes):
+                    if class_failure_mask_tensors[class_id][1].any():
+                        agent = self.agents[class_id]
+                        class_actions_list[class_id] = agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+                    else:
+                        # ない場合はとりあえずNoneにしとく
+                        class_actions_list[class_id] = None
+
+                # 最終的なアクションを決定（故障している関節のアクションを使用、それ以外は健康状態）
+                actions = health_actions.clone()
+                for class_id, class_failure_mask in class_failure_mask_tensors:
+                    if class_failure_mask.any():
+                        actions[class_failure_mask] = class_actions_list[class_id][class_failure_mask]
 
                 # step the environments
-                next_states, rewards, terminated, truncated, infos = self.env.step(actions)
+                next_policy_states, rewards, terminated, truncated, infos = self.env.step(actions)
+                next_states = self.env.obs_buf['state']  # 観測はobs_bufから'state'を取り出してそれを使うようにする
 
                 # render scene
                 if not self.headless:
                     self.env.render()
 
             # reset environments
-            if terminated.any() or truncated.any():
+            reseted_tensor = terminated | truncated
+            if reseted_tensor.any():
                 with torch.no_grad():
-                    states, infos = self.env.reset()
+                    policy_states, infos = self.env.reset()
+                    states = self.env.obs_buf['state'] # 観測はobs_bufから'state'を取り出してそれを使うようにする
+                    not_reseted = reseted_tensor.bool().logical_not().float()
+                    mask = not_reseted.view(1, self.num_envs, 1)
+                    hidden_states = hidden_states * mask
+                    # print(f"[DEBUG] timestep {timestep} environments reset: {reseted_tensor}")
             else:
                 states = next_states
+                policy_states = next_policy_states
             # リセット状態を状態履歴キューに追加
-            reseted_tensor = terminated | truncated
             self.state_history_queue.append_reseted(reseted_tensor)
+            self.failure_history_queue.set_reseted(reseted_tensor)
 
     def save(self, dir_path: str) -> None:
         """
