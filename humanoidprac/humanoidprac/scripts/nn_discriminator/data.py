@@ -120,6 +120,21 @@ class JointDataset(Dataset):
         all_data_files = sorted(list(self.data_dir.glob("*_data.csv")))
         all_label_files = sorted(list(self.data_dir.glob("*_labels.csv")))
 
+        # データファイルとラベルファイルのペアを正しく作成
+        # ファイル名から _data.csv または _labels.csv を除いた部分をキーとして使用
+        data_dict = {}
+        for data_file in all_data_files:
+            key = str(data_file).replace("_data.csv", "")
+            data_dict[key] = data_file
+
+        label_dict = {}
+        for label_file in all_label_files:
+            key = str(label_file).replace("_labels.csv", "")
+            label_dict[key] = label_file
+
+        # 両方に存在するキーのみを使用
+        common_keys = sorted(set(data_dict.keys()) & set(label_dict.keys()))
+
         # 空でないファイルのみをフィルタリング
         self.data_file_list = []
         self.label_file_list = []
@@ -131,24 +146,35 @@ class JointDataset(Dataset):
         self.data_cache = []
         self.label_cache = []
 
-        for data_file, label_file in zip(all_data_files, all_label_files):
+        for key in common_keys:
+            data_file = data_dict[key]
+            label_file = label_dict[key]
             try:
                 label = pd.read_csv(label_file, header=None)
-                length = len(label)
-                if length == 0:
+                data = pd.read_csv(data_file, header=None, dtype=np.float32)
+
+                label_length = len(label)
+                data_length = len(data)
+
+                # 長さの検証
+                if label_length != data_length:
+                    print(f"Warning: Length mismatch - skipping {data_file.name} ({data_length} rows) and {label_file.name} ({label_length} rows)")
+                    continue
+
+                if label_length == 0:
                     continue  # 空のファイルはスキップ
 
                 self.data_file_list.append(data_file)
                 self.label_file_list.append(label_file)
-                self.episode_lengths.append(length)
-                self.total_length += length
+                self.episode_lengths.append(label_length)
+                self.total_length += label_length
                 self.cumulative_lengths.append(self.total_length)
 
                 # メモリキャッシュを使用する場合
                 if cache_in_memory:
-                    data = pd.read_csv(data_file, header=None, dtype=np.float32).values
+                    data_arr = data.values
                     label_arr = label.values.astype(np.float32)
-                    self.data_cache.append(data)
+                    self.data_cache.append(data_arr)
                     self.label_cache.append(label_arr)
                 else:
                     self.data_cache.append(None)
@@ -231,9 +257,15 @@ class JointDataset(Dataset):
             data_arr = data_rows.values
             label_arr = label_rows.values
 
+        # データが期待するsequence_lengthに満たない場合はエラー
+        # （__len__で計算済みなので通常は発生しないが、念のため）
+        if data_arr.shape[0] != self.sequence_length:
+            raise ValueError(f"Expected sequence_length {self.sequence_length}, but got {data_arr.shape[0]} at index {idx} (file_idx={file_idx}, local_idx={local_idx}, episode_length={self.episode_lengths[file_idx]})")
+
         # テンソル化（sequence_length x feature_dim の2次元テンソル）
-        data = torch.from_numpy(data_arr).to(dtype=torch.float32, device=self.device)
-        label = torch.from_numpy(label_arr).to(dtype=torch.float32, device=self.device)
+        # DataLoaderのマルチプロセスに対応するため、CPUテンソルとして返す
+        data = torch.from_numpy(data_arr).to(dtype=torch.float32)
+        label = torch.from_numpy(label_arr).to(dtype=torch.float32)
 
         # sequence_length=1 の場合は従来通り1次元ベクトルとして返す
         if self.sequence_length == 1:

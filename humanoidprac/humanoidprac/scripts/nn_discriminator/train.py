@@ -52,15 +52,15 @@ if __name__ == "__main__":
     datasets = data.JointDataset(
                 data_dir="processed_data",
                 sequence_length=sequence_length,
-                device="cuda",
                 cache_in_memory=True
                 )
     dataloader = torch.utils.data.DataLoader(
-                        datasets, 
+                        datasets,
                         batch_size=1024,
                         shuffle=True,
-                        collate_fn=data.collate_episodes, 
-                        num_workers=6
+                        collate_fn=data.collate_episodes,
+                        num_workers=6,
+                        pin_memory=True  # CPU→GPU転送を高速化
                     )
 
     model = JointGRUNet(input_size, hidden_size, output_size).to("cuda")
@@ -74,6 +74,9 @@ if __name__ == "__main__":
         total_accuracy = 0.0
         for batch in dataloader:
             inputs, targets = batch
+            # CPUテンソルをGPUに転送
+            inputs = inputs.to("cuda", non_blocking=True)
+            targets = targets.to("cuda", non_blocking=True)
             loss, accuracy = trainer.train_step(inputs, targets[:,-1,:])
             total_loss += loss
             total_accuracy += accuracy
