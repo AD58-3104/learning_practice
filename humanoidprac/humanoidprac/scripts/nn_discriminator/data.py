@@ -188,17 +188,36 @@ def file_counts_in_directory(directory: str):
     files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
     return len(files)
 
+def process_single_file(args):
+    """並列処理用の関数：単一ファイルを処理する"""
+    i, output_dir = args
+    merger = DataMerger(output_dir=output_dir)
+    merger.file_setup(
+        obs_data_path=f"nn_data/discriminator_obs_env_{i+1}.dat",
+        event_data_path=f"nn_data/joint_torque_event_log_env_{i+1}.dat",
+        output_file_name=f"nn_discriminator_training_data_env_{i+1}"
+    )
+    merger.process()
+    return i
+
 if __name__ == "__main__":
     num_target_files = int(file_counts_in_directory("nn_data") / 2)
-    merger = DataMerger()
-    for i in range(num_target_files):
-        num_gen_files = int(file_counts_in_directory("processed_data") / 2)
-        merger.file_setup(
-                obs_data_path=f"nn_data/discriminator_obs_env_{i+1}.dat",
-                event_data_path=f"nn_data/joint_torque_event_log_env_{i+1}.dat",
-                output_file_name="nn_discriminator_training_data"
-            )
-        merger.process()
+    output_dir = "processed_data"
+
+    # 並列処理の実行
+    num_workers = min(cpu_count(), num_target_files)
+    print(f"Processing {num_target_files} files using {num_workers} workers...")
+
+    with Pool(processes=num_workers) as pool:
+        args_list = [(i, output_dir) for i in range(num_target_files)]
+        # tqdmでプログレスバーを表示
+        results = list(tqdm.tqdm(
+            pool.imap(process_single_file, args_list),
+            total=num_target_files,
+            desc="Processing files"
+        ))
+
+    print("All files processed successfully!")
 
     dataset = JointDataset(data_dir="processed_data")
     print(f"Dataset length: {len(dataset)}")
