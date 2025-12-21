@@ -23,7 +23,7 @@ if __name__ == "__main__":
     model.eval()
 
     batch_size = 256
-    datasets = data.JointDataset(data_dir="test_data/processed_data", device="cuda",sequence_length=setting.SEQUENCE_LENGTH)
+    datasets = data.JointDataset(data_dir="test_data/processed_data",sequence_length=setting.SEQUENCE_LENGTH)
     dataloader = torch.utils.data.DataLoader(datasets, batch_size=batch_size, shuffle=False, collate_fn=data.collate_episodes,num_workers=4)
     total_samples = 0
     batch_index = 0
@@ -40,6 +40,8 @@ if __name__ == "__main__":
     with torch.no_grad():
         for batch in tqdm.tqdm(dataloader, desc="Evaluating"):
             inputs, targets = batch
+            inputs = inputs.to("cuda", non_blocking=True)
+            targets = targets.to("cuda", non_blocking=True)
             if inputs.size(0) != batch_size:
                 break # バッチサイズがbatch_sizeでない場合は終了
             outputs, hidden_states = model(inputs, hidden_states)
