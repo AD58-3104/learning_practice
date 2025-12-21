@@ -76,7 +76,7 @@ class DataMerger:
         if not self.output_observations or not self.output_labels:
             return
 
-        # DataFrameに変換
+        # DataFrameに変換した
         data = pd.DataFrame(self.output_observations)
         label = pd.DataFrame(self.output_labels)
 
@@ -194,8 +194,8 @@ if __name__ == "__main__":
     for i in range(num_target_files):
         num_gen_files = int(file_counts_in_directory("processed_data") / 2)
         merger.file_setup(
-                obs_data_path=f"nn_data/{i+1}_discriminator_obs.dat",
-                event_data_path=f"nn_data/{i+1}_joint_torque_event_log.dat",
+                obs_data_path=f"nn_data/discriminator_obs_env_{i+1}.dat",
+                event_data_path=f"nn_data/joint_torque_event_log_env_{i+1}.dat",
                 output_file_name="nn_discriminator_training_data"
             )
         merger.process()

@@ -28,6 +28,11 @@ class JointGRUNet(nn.Module):
         )
 
     def forward(self, x, hidden=None):
+        # 2次元入力の場合、seq_len次元を追加（ストリーミング推論用）
+        # x: (batch, input_size) -> (batch, 1, input_size)
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+
         # x: (batch, sequence, input_size) when batch_first=True
         out, next_hidden = self.gru(x, hidden)
         # out: (batch, sequence, hidden_size) when batch_first=True

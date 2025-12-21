@@ -50,7 +50,7 @@ if __name__ == "__main__":
     output_size = setting.WHOLE_JOINT_NUM   # 19個の関節それぞれに故障があるかどうかを判断
 
     datasets = data.JointDataset(data_dir="processed_data",sequence_length=sequence_length,device="cuda")
-    dataloader = torch.utils.data.DataLoader(datasets, batch_size=32,shuffle=True,collate_fn=data.collate_episodes)
+    dataloader = torch.utils.data.DataLoader(datasets, batch_size=1024,shuffle=True,collate_fn=data.collate_episodes, num_workers=6)
 
     model = JointGRUNet(input_size, hidden_size, output_size).to("cuda")
     trainer = Trainer(model)
