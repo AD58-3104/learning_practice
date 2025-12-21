@@ -258,9 +258,9 @@ def process_single_file(args):
     i, output_dir = args
     merger = DataMerger(output_dir=output_dir)
     merger.file_setup(
-        obs_data_path=f"nn_data/discriminator_obs_env_{i+1}.dat",
-        event_data_path=f"nn_data/joint_torque_event_log_env_{i+1}.dat",
-        output_file_name=f"nn_discriminator_training_data_env_{i+1}"
+        obs_data_path=f"nn_data/discriminator_obs_env_{i}.dat",
+        event_data_path=f"nn_data/joint_torque_event_log_env_{i}.dat",
+        output_file_name=f"nn_discriminator_training_data_env_{i}"
     )
     merger.process()
     return i
