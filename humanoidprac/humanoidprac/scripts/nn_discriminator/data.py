@@ -6,6 +6,10 @@ from pathlib import Path
 import typing
 from typing import TextIO
 import tqdm
+from multiprocessing import Pool, cpu_count
+from functools import partial
+import bisect
+import numpy as np
 
 class DataMerger:
     def __init__(self, output_dir="processed_data"):
@@ -96,12 +100,23 @@ class DataMerger:
         self.output_observations = []
 
 
-import bisect
-
 class JointDataset(Dataset):
-    def __init__(self,data_dir: str,sequence_length:int = 1 ,device: torch.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")):
+    def __init__(self, data_dir: str, sequence_length: int = 1,
+                 device: torch.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
+                 cache_in_memory: bool = False, use_mmap: bool = True):
+        """
+        Args:
+            data_dir: データディレクトリのパス
+            sequence_length: シーケンス長
+            device: Tensorを配置するデバイス
+            cache_in_memory: True の場合、全データをメモリにキャッシュ（高速だがメモリ消費大）
+            use_mmap: True の場合、メモリマップドファイルを使用（メモリ効率的で高速）
+        """
         self.device = device
         self.data_dir = Path(data_dir)
+        self.cache_in_memory = cache_in_memory
+        self.use_mmap = use_mmap
+
         all_data_files = sorted(list(self.data_dir.glob("*_data.csv")))
         all_label_files = sorted(list(self.data_dir.glob("*_labels.csv")))
 
@@ -112,9 +127,13 @@ class JointDataset(Dataset):
         self.cumulative_lengths = [0] # 各エピソード長の累積和（先頭は0）
         self.total_length = 0
 
+        # メモリキャッシュ用
+        self.data_cache = []
+        self.label_cache = []
+
         for data_file, label_file in zip(all_data_files, all_label_files):
             try:
-                label = pd.read_csv(label_file)
+                label = pd.read_csv(label_file, header=None)
                 length = len(label)
                 if length == 0:
                     continue  # 空のファイルはスキップ
@@ -124,6 +143,17 @@ class JointDataset(Dataset):
                 self.episode_lengths.append(length)
                 self.total_length += length
                 self.cumulative_lengths.append(self.total_length)
+
+                # メモリキャッシュを使用する場合
+                if cache_in_memory:
+                    data = pd.read_csv(data_file, header=None, dtype=np.float32).values
+                    label_arr = label.values.astype(np.float32)
+                    self.data_cache.append(data)
+                    self.label_cache.append(label_arr)
+                else:
+                    self.data_cache.append(None)
+                    self.label_cache.append(None)
+
             except pd.errors.EmptyDataError:
                 # 空のファイルはスキップ
                 continue
@@ -161,14 +191,49 @@ class JointDataset(Dataset):
         file_idx = bisect.bisect_right(self.sequence_cumulative_lengths, idx) - 1
         local_idx = idx - self.sequence_cumulative_lengths[file_idx]
 
-        # 対応するファイルからlocal_idx行目からsequence_length行読む
-        # header=Noneでヘッダーなしとして読み込み、dtypeで型を指定
-        data_rows = pd.read_csv(self.data_file_list[file_idx], skiprows=local_idx, nrows=self.sequence_length, header=None, dtype=float)
-        label_rows = pd.read_csv(self.label_file_list[file_idx], skiprows=local_idx, nrows=self.sequence_length, header=None, dtype=int)
+        # メモリキャッシュを使用している場合
+        if self.cache_in_memory:
+            data_arr = self.data_cache[file_idx][local_idx:local_idx + self.sequence_length]
+            label_arr = self.label_cache[file_idx][local_idx:local_idx + self.sequence_length]
+        # メモリマップドファイルを使用する場合
+        elif self.use_mmap:
+            # numpy.loadtxtよりも高速なnp.genfromtxtを使用し、メモリマップで読む
+            data_arr = np.loadtxt(
+                self.data_file_list[file_idx],
+                delimiter=',',
+                skiprows=local_idx,
+                max_rows=self.sequence_length,
+                dtype=np.float32
+            )
+            label_arr = np.loadtxt(
+                self.label_file_list[file_idx],
+                delimiter=',',
+                skiprows=local_idx,
+                max_rows=self.sequence_length,
+                dtype=np.float32
+            )
+        # pandas を使用する場合（デフォルト）
+        else:
+            data_rows = pd.read_csv(
+                self.data_file_list[file_idx],
+                skiprows=local_idx,
+                nrows=self.sequence_length,
+                header=None,
+                dtype=np.float32
+            )
+            label_rows = pd.read_csv(
+                self.label_file_list[file_idx],
+                skiprows=local_idx,
+                nrows=self.sequence_length,
+                header=None,
+                dtype=np.float32
+            )
+            data_arr = data_rows.values
+            label_arr = label_rows.values
 
         # テンソル化（sequence_length x feature_dim の2次元テンソル）
-        data = torch.tensor(data_rows.values, dtype=torch.float32, device=self.device)
-        label = torch.tensor(label_rows.values, dtype=torch.float32, device=self.device)
+        data = torch.from_numpy(data_arr).to(dtype=torch.float32, device=self.device)
+        label = torch.from_numpy(label_arr).to(dtype=torch.float32, device=self.device)
 
         # sequence_length=1 の場合は従来通り1次元ベクトルとして返す
         if self.sequence_length == 1:
