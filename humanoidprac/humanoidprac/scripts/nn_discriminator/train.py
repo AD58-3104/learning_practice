@@ -8,7 +8,7 @@ class Trainer:
     def __init__(self, model):
         self.model = model
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        self.error_function = torch.nn.BCEWithLogitsLoss()
+        self.error_function = torch.nn.BCELoss()
         self.step = 0
         self.running_loss = 0.0
         self.writer = SummaryWriter(log_dir="learning_log")

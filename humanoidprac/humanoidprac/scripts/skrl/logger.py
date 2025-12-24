@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 import json
 import time
+import numpy as np
 
 class SettingLogger():
     def __init__(self,env_cfg:ManagerBasedRLEnvCfg):
@@ -185,21 +186,267 @@ class ExperimentValueLogger:
         print(f"[Exp Data Logger] Step {self.step_count} reached.")
         print("[Exp Data Logger] Logging finished.")
 
+class ClassSuccessRateLogger:
+    def __init__(self, classifier,log_dir: str = "."):
+        self.classifier = classifier
+        self.log_dir = log_dir
+        self.total_failure = [0 for _ in range(classifier.num_of_classes)]
+        self.total_epicode_count = [0 for _ in range(classifier.num_of_classes)]
+
+    def log(self, terminated: torch.Tensor, truncated: torch.Tensor):
+        term_or_trunc = terminated | truncated
+        for class_idx in range(self.classifier.num_of_classes):
+            term_or_trunc_in_class = self.classifier.mask_other_classes(class_idx, term_or_trunc)
+            self.total_epicode_count[class_idx] += torch.sum(term_or_trunc_in_class).item()
+            self.total_failure[class_idx] += torch.sum(self.classifier.mask_other_classes(class_idx, terminated)).item()
+
+    def write_result(self):
+        import os
+        with open(os.path.join(self.log_dir, "class_success_rate.log"), 'w') as f:
+            f.write("Class Index, Total Episodes, Total Failures, Success Rate [%]\n")
+            for class_idx in range(self.classifier.num_of_classes):
+                if self.total_epicode_count[class_idx] > 0:
+                    success_rate = (1.0 - float(self.total_failure[class_idx]) / float(self.total_epicode_count[class_idx])) * 100.0
+                else:
+                    success_rate = 0.0
+                f.write(f"{class_idx}, {self.total_epicode_count[class_idx]}, {self.total_failure[class_idx]}, {success_rate:.2f}\n")
+        print("[Class Success Rate Logger] Result written to class_success_rate.log")
 
 # NNの判別器を訓練するために利用する観測を保存するクラス
 class DiscriminatorObsDataLogger:
-    def __init__(self, env: ManagerBasedRLEnv, log_file_name: str = "discriminator_obs.dat"):
-        self.log_file_name = log_file_name
-        self.log_file = open(log_file_name, 'w')
-        print(f"[Discriminator Data Logger] Open logfile {log_file_name}")
-        obs_num = env.observation_space.shape[0]
-        obs_rep = ','.join([f"observation_{i}" for i in range(obs_num)])
-        self.log_file.write(f"step,terminated,{obs_rep}\n")
+    def __init__(self, env: ManagerBasedRLEnv):
+        self.log_file_names = []
+        self.num_envs = env.num_envs
+        self.data = {}
+        # ファイルの初期化
+        for i in range(self.num_envs):
+            filename = f"./nn_data/discriminator_obs_env_{i}.npz"
+            self.log_file_names.append(filename)
+            self.data[i] = []
+        # データ形式
+        # step, terminated | truncated, data...
+        # データは[2]に来る
 
     def log(self, step: int, observations: torch.Tensor, terminated: torch.Tensor, truncated: torch.Tensor):
         term_or_trunc = terminated | truncated
-        self.log_file.write(f"{step},{term_or_trunc[0].item()},{','.join(map(str, observations[0].tolist()))}\n")
+        for env_idx in range(self.num_envs):
+            obs_list = observations[env_idx].tolist()
+            self.data[env_idx].append(
+                    np.array([step, term_or_trunc[env_idx].item()] + obs_list))
 
     def close(self):
-        self.log_file.close()
-        print(f"[Discriminator Data Logger] Logfile {self.log_file_name} closed.")
+        for env_idx in range(self.num_envs):
+            filename = self.log_file_names[env_idx]
+            data_array = np.array(self.data[env_idx])
+            np.savez_compressed(filename, data=data_array)
+        print(f"[Discriminator Data Logger] Logfiles closed.")
+
+class DiscriminatorObsDataLoggerOptimized:
+    def __init__(self, env, max_steps: int):
+        self.save_dir = "./nn_data"
+        import os
+        os.makedirs(self.save_dir, exist_ok=True)
+        
+        self.num_envs = env.num_envs
+        self.max_steps = max_steps
+        
+        # バッファは最初のlog呼び出し時に確保します（obsの次元数を知るため）
+        self.buffer = None 
+        self.current_write_idx = 0
+        
+        self.log_file_names = [os.path.join(self.save_dir, f"discriminator_obs_env_{i}.npz") for i in range(self.num_envs)]
+
+    def log(self, step: int, observations: torch.Tensor, terminated: torch.Tensor, truncated: torch.Tensor):
+        """
+        step: 現在のステップ数（整数）
+        observations: (num_envs, obs_dim) のTensor
+        terminated, truncated: (num_envs,) のTensor
+        """
+        
+        # --- 初回のみ実行: バッファの確保 ---
+        if self.buffer is None:
+            obs_dim = observations.shape[1]
+            # 保存するデータの次元: [step(1) + terminated(1) + observations(obs_dim)]
+            data_dim = 1 + 1 + obs_dim
+            # CPU上に巨大なメモリ領域を確保
+            self.buffer = torch.zeros((self.num_envs, self.max_steps, data_dim), dtype=torch.float32, device='cpu')
+
+        # バッファあふれ防止
+        if self.current_write_idx >= self.max_steps:
+            return
+
+        # --- GPU上での一括処理 (forループなし) ---
+        device = observations.device
+        
+        # 1. Step数 (スカラー -> 全環境分の列ベクトルへ拡張)
+        step_tensor = torch.full((self.num_envs, 1), step, device=device, dtype=torch.float32)
+        
+        # 2. 終了フラグ (論理和 -> float変換 -> 次元追加)
+        term_tensor = (terminated | truncated).float().unsqueeze(1)
+        
+        # 3. データの結合 [step, term, obs...]
+        # ここですべてGPUテンソルとして結合します
+        batch_data = torch.cat([step_tensor, term_tensor, observations], dim=1)
+
+        # --- CPUへの一括転送 ---
+        # 計算の裏で転送を行う non_blocking=True でさらに高速化
+        self.buffer[:, self.current_write_idx, :] = batch_data.to('cpu', non_blocking=True)
+        
+        self.current_write_idx += 1
+
+    def close(self):
+        print(f"[Discriminator Data Logger] Saving data...")
+        
+        # 実際に記録されたステップ数まで有効なデータをスライス
+        if self.buffer is not None:
+            valid_data = self.buffer[:, :self.current_write_idx, :].numpy()
+            
+            for env_idx in range(self.num_envs):
+                filename = self.log_file_names[env_idx]
+                np.savez_compressed(filename, data=valid_data[env_idx])
+        else:
+            print("Warning: No data was logged.")
+            
+        print(f"[Discriminator Data Logger] Logfiles closed.")
+
+class JointTorqueLogger:
+    def __init__(self, env: ManagerBasedRLEnv, joint_num: int, target_torque: float):
+        self.log_file_names = []
+        self.num_envs = env.num_envs
+        self.joint_num = joint_num
+        self.target_torque = target_torque
+        self.data = {}
+        # dataは環境id毎にステップ順のデータを持つ
+        # ファイルの初期化
+        for i in range(self.num_envs):
+            filename = f"./nn_data/joint_torque_env_{i}.npz"
+            self.log_file_names.append(filename)
+            self.data[i] = []
+        # データ形式 
+        # step, terminated | truncated, data...
+
+    def log(self, env, terminated: torch.tensor, truncated: torch.Tensor):
+        term_or_trunc = terminated | truncated
+        robot = env.scene["robot"]
+        joint_effort_limits = robot.data.joint_effort_limits  # (num_envs, joint_num)
+        joint_effort_limits_bool = (joint_effort_limits < (self.target_torque + 1.0)).long()
+        for env_idx in range(self.num_envs):
+            self.data[env_idx].append(
+                    np.array([env.common_step_counter, term_or_trunc[env_idx].item()] + joint_effort_limits_bool[env_idx].tolist(), dtype=np.int32))
+
+    def close(self):
+        for env_idx in range(self.num_envs):
+            filename = self.log_file_names[env_idx]
+            data_array = np.array(self.data[env_idx])
+            np.savez_compressed(filename, data=data_array)
+        print(f"[Joint Torque Logger] Logfiles closed.")
+
+
+class JointTorqueLoggerOptimized:
+    def __init__(self, env, joint_num: int, target_torque: float, max_steps: int):
+        self.save_dir = "./nn_data"
+        import os
+        os.makedirs(self.save_dir, exist_ok=True)
+        
+        self.num_envs = env.num_envs
+        self.joint_num = joint_num
+        self.target_torque = target_torque
+        
+        # 【高速化ポイント1】事前に大きなバッファ（メモリ領域）をCPU側に確保します
+        # 形状: (環境数, ステップ数, データ次元数) 
+        # データ次元 = step(1) + terminated(1) + joint_bools(joint_num)
+        self.data_dim = 1 + 1 + joint_num
+        
+        # 注意: メモリ圧迫を避けるためCPU上のTorch Tensorとして確保（NumPyよりTorch間のコピーが速いため）
+        self.buffer = torch.zeros((self.num_envs, max_steps, self.data_dim), dtype=torch.int32, device='cpu')
+        
+        self.current_step_idx = 0 
+        self.log_file_names = [os.path.join(self.save_dir, f"joint_torque_env_{i}.npz") for i in range(self.num_envs)]
+
+    def log(self, env, terminated: torch.Tensor, truncated: torch.Tensor):
+        # バッファあふれ防止
+        if self.current_step_idx >= self.buffer.shape[1]:
+            return
+
+        # --- GPU上での計算 (ここがポイント) ---
+        # 全て Tensor演算で行い、forループは使いません
+        
+        # 1. Terminated / Truncated 情報 (num_envs, 1)
+        term_or_trunc = (terminated | truncated).float().unsqueeze(1) 
+        
+        # 2. Joint Limits Boolean (num_envs, joint_num)
+        robot = env.scene["robot"]
+        joint_effort_limits = robot.data.joint_effort_limits
+        
+        # 比較演算もGPU上で一括処理
+        # (num_envs, joint_num) のBoolean Tensorを作成
+        target_val = self.target_torque + 1.0
+        joint_bools = (joint_effort_limits < target_val).float()
+
+        # 3. Step Counter (num_envs, 1)
+        # スカラー値を環境数分拡張します
+        step_tensor = torch.full((self.num_envs, 1), env.common_step_counter, device=env.device, dtype=torch.int32)
+
+        # 4. データの結合 (Concatenate)
+        # GPU上で横方向に結合: [step, term, bool_0, bool_1, ...]
+        current_step_data = torch.cat([step_tensor, term_or_trunc, joint_bools], dim=1)
+
+        # --- CPUへの転送 (1ステップに1回だけ) ---
+        # .to('cpu', non_blocking=True) を使うと、計算の裏で転送できる場合がありさらに速い
+        self.buffer[:, self.current_step_idx, :] = current_step_data.to('cpu', non_blocking=True)
+        
+        self.current_step_idx += 1
+
+    def close(self):
+        print(f"[Joint Torque Logger] Saving data...")
+        
+        # 実際に記録されたステップ数まででスライス
+        valid_data = self.buffer[:, :self.current_step_idx, :].numpy()
+        
+        for env_idx in range(self.num_envs):
+            filename = self.log_file_names[env_idx]
+            # 各環境のデータを保存
+            # valid_data[env_idx] は (recorded_steps, data_dim) の形状
+            np.savez_compressed(filename, data=valid_data[env_idx])
+            
+        print(f"[Joint Torque Logger] Logfiles closed.")
+
+class DiscriminatorTester:
+    """NNの判別器をテストするためのクラス"""
+    def __init__(self, target_torque: float, joint_num: int, num_envs: int):
+        self.target_torque = target_torque
+        self.joint_num = joint_num
+        self.total_count = torch.zeros((num_envs, joint_num), device="cuda")
+        self.success_count = torch.zeros((num_envs, joint_num), device="cuda")
+        self.detect_count = torch.zeros((num_envs, joint_num), device="cuda")
+
+    def log(self, env: ManagerBasedRLEnv, discriminator_outputs: torch.Tensor):
+        robot = env.scene["robot"]
+        joint_effort_limits = robot.data.joint_effort_limits  # (num_envs, joint_num)
+        joint_effort_limits_bool = (joint_effort_limits < (self.target_torque + 1.0))
+        # リミット掛かってる環境の総数を記録する
+        self.total_count += joint_effort_limits_bool.long()
+        self.success_count += (joint_effort_limits_bool & discriminator_outputs.bool()).long()
+        self.detect_count += discriminator_outputs.long()
+
+    def write_result(self):
+        log_dir = "./play_logs"
+        import os
+        with open(os.path.join(log_dir, "discriminator_test_result.log"), 'w') as f:
+            f.write("Joint Index, Total limited num, Total Success detected, Success Rate [%]\n")
+            # >>> Right_legs joint_ids: [1, 4, 8, 12]
+            # >>> Left_legs joint_ids: [0, 3, 7, 11]
+            for joint_idx in [1, 4, 8, 12, 0, 3, 7, 11]:
+                total_tested = int(torch.sum(self.total_count[:, joint_idx]).item())
+                total_success = int(torch.sum(self.success_count[:, joint_idx]).item())
+                if total_tested > 0:
+                    success_rate = (float(total_success) / float(total_tested)) * 100.0
+                else:
+                    success_rate = 0.0
+                f.write(f"{joint_idx}, {total_tested}, {total_success}, {success_rate:.2f}\n")
+                print(f"[Discriminator Tester] Joint {joint_idx}: Success Rate {success_rate:.2f}% ({total_success}/{total_tested})")
+            for joint_idx in range(self.joint_num):
+                total_detected = int(torch.sum(self.detect_count[:, joint_idx]).item())
+                f.write(f"Joint {joint_idx} Total detected: {total_detected}\n")
+                print(f"[Discriminator Tester] Joint {joint_idx}: Total detected {total_detected}")
+        print("[Discriminator Tester] Result written to discriminator_test_result.log")

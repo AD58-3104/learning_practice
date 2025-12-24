@@ -17,14 +17,25 @@ if __name__ == "__main__":
     input_size = setting.OBS_DIMENSION    # 観測は88次元
     hidden_size = setting.HIDDEN_SIZE
     output_size = setting.WHOLE_JOINT_NUM   # 19個の関節それぞれに故障があるかどうかを判断
+    sequence_length = setting.SEQUENCE_LENGTH
 
     model = JointGRUNet(input_size, hidden_size, output_size).to("cuda")
     model.load_state_dict(torch.load(args.model_path))
     model.eval()
 
-    batch_size = 256
-    datasets = data.JointDataset(data_dir="test_data/processed_data",sequence_length=setting.SEQUENCE_LENGTH)
-    dataloader = torch.utils.data.DataLoader(datasets, batch_size=batch_size, shuffle=False, collate_fn=data.collate_episodes,num_workers=4)
+    batch_size = 4096
+    datasets = data.JointDataset(
+                        data_dir="test_data/processed_data",
+                        sequence_length=sequence_length,
+                        cache_in_memory=True
+                        )
+    dataloader = torch.utils.data.DataLoader(
+                            datasets, 
+                            batch_size=batch_size, 
+                            shuffle=False, 
+                            collate_fn=data.collate_episodes,
+                            num_workers=4
+                        )
     total_samples = 0
     batch_index = 0
     hidden_states = None
@@ -42,11 +53,16 @@ if __name__ == "__main__":
             inputs, targets = batch
             inputs = inputs.to("cuda", non_blocking=True)
             targets = targets.to("cuda", non_blocking=True)
+            if batch_index % 100 == 0:
+                print(f"Online Input Range: Min={inputs.min().item():.3f}, Max={inputs.max().item():.3f}, Mean={inputs.mean().item():.3f}")
             if inputs.size(0) != batch_size:
                 break # バッチサイズがbatch_sizeでない場合は終了
-            outputs, hidden_states = model(inputs, hidden_states)
+            outputs, hidden_states = model(inputs, hidden=None)
             outputs = (outputs > 0.6).long()
-            targets = targets[:,-1,:].long()
+            if sequence_length > 1:
+                targets = targets[:,-1,:].long()
+            else:
+                targets = targets.long()
             total_real_failure += targets.sum(dim=0)
             total_correct += (outputs == targets).long().sum(dim=0)
             total_samples += targets.size(0)

@@ -19,13 +19,23 @@ class JointNet(nn.Module):
     
 
 class JointGRUNet(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1, dropout_p=0.5):
         super(JointGRUNet, self).__init__()
-        self.gru = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
+        gru_dropout = dropout_p if num_layers > 1 else 0.0
+        self.gru = nn.GRU( 
+                        input_size, 
+                        hidden_size, 
+                        num_layers, 
+                        batch_first=True, 
+                        dropout=gru_dropout  # これは中間層がある場合のみ適用
+                    )
         self.fc = nn.Sequential(
             nn.Linear(hidden_size, output_size),
             nn.Sigmoid()
         )
+
+        self.dropout = nn.Dropout(p=0.5)
+
 
     def forward(self, x, hidden=None):
         # 2次元入力の場合、seq_len次元を追加（ストリーミング推論用）
@@ -35,7 +45,10 @@ class JointGRUNet(nn.Module):
 
         # x: (batch, sequence, input_size) when batch_first=True
         out, next_hidden = self.gru(x, hidden)
+        last_out = out[:, -1, :]
+        # 全結合層に入れる前にドロップアウトを適用
+        last_out = self.dropout(last_out)
         # out: (batch, sequence, hidden_size) when batch_first=True
-        out = self.fc(out[:, -1, :])  # 全バッチの最後のタイムステップを使用
+        out = self.fc(last_out)  # 全バッチの最後のタイムステップを使用
         return out, next_hidden
     
