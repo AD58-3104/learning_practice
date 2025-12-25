@@ -1,0 +1,6 @@
+*.dat
+data_history/**
+models/**
+nn_data/**
+test_data/**
+processed_data/**

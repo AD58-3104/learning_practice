@@ -83,3 +83,9 @@ train.pyではskrl.trainers.torch.SequentialTrainer.train()を呼んで学習を
   - これは改善する必要があるかもしれない。
   - intervalのeventの仕様をちゃんと把握する。
 - 今までは、エピソードがresetされた後も恐らく関節の弱体化が継続したままになっていた。なのでイベントとしてリセットした後に関節のトルクが初期に戻るようになっている。
+- **TODO**: hidden_statesのリセットが適切に行われているかを確認する
+
+
+# playの方法
+- models_dir でモデルのディレクトリを指定する必要がある
+- 
