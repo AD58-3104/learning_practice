@@ -230,9 +230,10 @@ class DiscriminatorObsDataLogger:
     def log(self, step: int, observations: torch.Tensor, terminated: torch.Tensor, truncated: torch.Tensor):
         term_or_trunc = terminated | truncated
         for env_idx in range(self.num_envs):
-            obs_list = observations[env_idx].tolist()
+            obs_np = observations[env_idx].cpu().numpy()
             self.data[env_idx].append(
-                    np.array([step, term_or_trunc[env_idx].item()] + obs_list))
+                        np.concatenate((np.array([step, term_or_trunc[env_idx].item()], dtype=np.float32),obs_np))
+                    )
 
     def close(self):
         for env_idx in range(self.num_envs):

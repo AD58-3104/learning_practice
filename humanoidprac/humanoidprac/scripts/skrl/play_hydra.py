@@ -213,7 +213,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 actions = outputs[-1].get("mean_actions", outputs[0])
             # env stepping
             obs, _, terminated, truncated, _ = env.step(actions)
-            nn_disc_logger.log(env.common_step_counter,obs,terminated,truncated)
+            obs_dict = env.obs_buf
+            nn_disc_logger.log(
+                    step=env.common_step_counter,
+                    observations=obs_dict['state'],
+                    terminated=terminated,
+                    truncated=truncated
+                )
             if exp_val_logger.log(env):
                 print("終了ステップに到達しました。")
                 break

@@ -1,5 +1,6 @@
 from typing import List, Optional, Union
 import queue
+from collections import deque
 
 import copy
 import sys
@@ -70,25 +71,26 @@ class StateHistoryQueue:
         self.max_length = max_length
         self.num_envs = num_envs
         self.device = device
-        self.queue = queue.Queue(maxsize=max_length)
+        self.queue = deque(maxlen=max_length)
         # 10シーケンス以内にリセットされたかどうかを管理するテンソル
-        self.reseted_queue = queue.Queue(maxsize=max_length)
+        self.reseted_queue = deque(maxlen=max_length)
 
     def append_state(self, state: torch.Tensor):
         # state shape: (num_envs, state_dim)
-        if self.queue.full():
-            self.queue.get()
-        self.queue.put(state)
+        if self.ready():
+            self.queue.popleft()
+        self.queue.append(state.clone())
 
     def append_reseted(self, reseted: torch.Tensor):
-        if self.reseted_queue.full():
-            self.reseted_queue.get()
-        self.reseted_queue.put(reseted)
+        if self.ready():
+            self.reseted_queue.popleft()
+        self.reseted_queue.append(reseted.clone())
 
     def get_state_sequence(self) -> torch.Tensor:
-        states = list(self.queue.queue)
+        states = list(self.queue)
         ret = torch.stack(states, dim=0)   # shape (sequence_length, num_envs, state_dim)
         ret = ret.permute(1, 0, 2)  # shape (num_envs, sequence_length, state_dim)
+        ret = ret.contiguous()
         return ret
 
     def ready(self) -> bool:
@@ -97,7 +99,7 @@ class StateHistoryQueue:
         これがFalseになるのは最初のmax_length個のステップだけ。
         これがFalseの場合はGRUでの推論はスキップして、強制的に健康状態モデルで動かすことにする。
         """
-        return self.queue.full()
+        return len(self.queue) == self.max_length
 
     def get_reseted_tensor(self) -> torch.Tensor:
         """
@@ -484,7 +486,7 @@ class CustomParallelAgentTrainer(Trainer):
         print("[INFO] Training completed.")
         self.save(self.model_save_dir)
 
-    def eval(self) -> None:
+    def eval(self, expdata_logger: None, success_rate_logger: None, discriminator_tester: None) -> None:
         """Evaluate the agents sequentially
 
         This method executes the following steps in loop:
@@ -611,6 +613,19 @@ class CustomParallelAgentTrainer(Trainer):
                 # step the environments
                 next_policy_states, rewards, terminated, truncated, infos = self.env.step(actions)
                 next_states = self.env.obs_buf['state']  # 観測はobs_bufから'state'を取り出してそれを使うようにする
+                # ロギング
+                if success_rate_logger is not None:
+                    success_rate_logger.log(terminated, truncated)
+                if discriminator_tester is not None:
+                    discriminator_tester.log(self.env,joint_failure.bool())
+                if expdata_logger is not None:
+                    if expdata_logger.log(self.env):
+                        if success_rate_logger is not None:
+                            success_rate_logger.write_result()
+                        if discriminator_tester is not None:
+                            discriminator_tester.write_result()
+                        print("[INFO] Evaluation completed.")
+                        break
 
                 # render scene
                 if not self.headless:
@@ -630,6 +645,138 @@ class CustomParallelAgentTrainer(Trainer):
                 states = next_states
                 policy_states = next_policy_states
             # リセット状態を状態履歴キューに追加
+            self.state_history_queue.append_reseted(reseted_tensor)
+            self.failure_history_queue.set_reseted(reseted_tensor)
+
+    def eval_joint_model(self, expdata_logger: None, success_rate_logger: None, discriminator_tester: None, obs_logger: None, joint_torque_logger: None) -> None:
+        # set running mode
+        if self.num_simultaneous_agents > 1:
+            self.health_agent.set_running_mode("eval")
+            for agent in self.agents:
+                agent.set_running_mode("eval")
+        else:
+            self.agents.set_running_mode("eval")
+
+        hidden_states = None  # 隠れ層
+        # reset env
+        policy_states, infos = self.env.reset()
+        states = self.env.obs_buf['state'].clone()  # 観測はobs_bufから'state'を取り出してそれを使うようにする
+        self.joint_gru_net.eval()
+
+        for timestep in tqdm.tqdm(
+            range(self.initial_timestep, self.timesteps), disable=self.disable_progressbar, file=sys.stdout
+        ):
+
+            # 状態履歴キューに現在の状態を追加
+            self.state_history_queue.append_state(states)
+            # print(states.dtype) torch.float32
+
+
+            if not self.state_history_queue.ready():
+                # ここに入るのは最初のsequense_length個のステップだけ
+                with torch.no_grad():
+                    # health_agentはinitの中でevalになっていて、その後trainには切り替えないのでこのままで良い
+                    actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+                    # GRUに推論させて、隠れ層を更新する
+                    # self.joint_gru_net.eval()
+                    # _, next_hidden_states = self.joint_gru_net(states, hidden=None)
+                    # hidden_states = next_hidden_states
+                    next_policy_states, _, terminated, truncated, _ = self.env.step(actions)
+                    next_states = self.env.obs_buf['state'].clone() # 観測はobs_bufから'state'を取り出してそれを使うようにする
+                    # 面倒なのでログは飛ばす
+                    # 訓練も当然しない
+                    # reset environments
+                    if terminated.any() or truncated.any():
+                        with torch.no_grad():
+                            policy_states, infos = self.env.reset()
+                            states = self.env.obs_buf['state'].clone()  # 観測はobs_bufから'state'を取り出してそれを使うようにする
+                    else:
+                        states = next_states
+                        policy_states = next_policy_states
+                    reseted_tensor = terminated | truncated
+                    self.state_history_queue.append_reseted(reseted_tensor)
+                continue
+
+            with torch.no_grad():
+                # shape (num_envs, 19)
+                # print(f"states shape: {states.unsqueeze(1).shape}")
+                state_seq = self.state_history_queue.get_state_sequence()
+                self.joint_gru_net.eval()
+                joint_failure, hidden_states = (self.joint_gru_net(state_seq, hidden=None))
+                joint_failure = (joint_failure > 0.6).long()  # 故障判定を二値化
+
+                # まず健康状態エージェントで全環境のアクションを計算
+                health_actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+                # if timestep % 500 == 0: 
+                if False: 
+                    good_idx = 11
+                    online_val_good = state_seq[0, :, good_idx].mean().item()
+                    
+                    # 2. その瞬間の「正解（生データ）」の値
+                    # ※ current_state は obs_buf['state'] そのもの
+                    true_val_good = states[0, good_idx].item()
+                    
+                    print(f"--- Check Joint Mapping ---")
+                    print(f"Good Joint[{good_idx}]: OnlineInputMean={online_val_good:.4f} vs TrueCurrent={true_val_good:.4f}")
+                    # for bad_idx in [0,1,3,4,7,8,12]:
+                    for bad_idx in [0]:
+                        online_val_bad  = state_seq[0, :, bad_idx].mean().item()
+                        true_val_bad  = states[0, bad_idx].item()
+                        print(f"Bad  Joint[{bad_idx}]: OnlineInputMean={online_val_bad:.4f}  vs TrueCurrent={true_val_bad:.4f}")
+                # print(states[0,0])
+                # if timestep % 10 == 0:
+                #     print(state_seq[0,:,0])
+                # robot = self.env.scene["robot"]
+                # id = [1, 4, 8, 12, 0, 3, 7, 11]
+                # effort = robot.data.joint_effort_limits[0][id]
+                # print(f"FF {effort}")
+                # print(f"dd {joint_failure[0][id]}")
+
+                # step the environments
+                next_policy_states, rewards, terminated, truncated, infos = self.env.step(health_actions)
+                next_states = self.env.obs_buf['state'].clone()  # 観測はobs_bufから'state'を取り出してそれを使うようにする
+                # ロギング
+                if success_rate_logger is not None:
+                    success_rate_logger.log(terminated, truncated)
+                if discriminator_tester is not None:
+                    discriminator_tester.log(self.env,joint_failure.bool())
+                if obs_logger is not None:
+                    obs_logger.log(self.env.common_step_counter, states, terminated, truncated)
+                if joint_torque_logger is not None:
+                    joint_torque_logger.log(self.env, terminated, truncated)
+                if expdata_logger is not None:
+                    if expdata_logger.log(self.env):
+                        if success_rate_logger is not None:
+                            success_rate_logger.write_result()
+                        if discriminator_tester is not None:
+                            discriminator_tester.write_result()
+                        if obs_logger is not None:
+                            obs_logger.close()
+                        if joint_torque_logger is not None:
+                            joint_torque_logger.close()
+                        print("[INFO] Evaluation completed.")
+                        break
+
+                # render scene
+                if not self.headless:
+                    self.env.render()
+
+            # reset environments
+            reseted_tensor = terminated | truncated
+            if reseted_tensor.any():
+                with torch.no_grad():
+                    policy_states, infos = self.env.reset()
+                    states = self.env.obs_buf['state'].clone() # 観測はobs_bufから'state'を取り出してそれを使うようにする
+                    # reset_indices: リセットが必要な環境IDのリスト
+                    reset_indices = torch.nonzero(reseted_tensor).squeeze(-1)
+                    
+                    # hidden_statesの形状は通常 (num_layers, batch_size, hidden_size)
+                    # 該当する環境の隠れ状態を 0.0 にリセットする
+                    # ※ .clone()が必要な場合がありますが、通常は直接代入でOKです
+                    hidden_states[:, reset_indices, :] = 0.0
+            else:
+                states = next_states
+                policy_states = next_policy_states
             self.state_history_queue.append_reseted(reseted_tensor)
             self.failure_history_queue.set_reseted(reseted_tensor)
 

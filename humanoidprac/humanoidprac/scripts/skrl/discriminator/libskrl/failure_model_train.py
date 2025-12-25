@@ -207,6 +207,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     for class_id in range(agent_num):
         target_scopes.append(classifier.get_class_envs(class_id))
 
+    # デバッグ: 観測空間のサイズを確認
+    print(f"[DEBUG] env.observation_space: {env.observation_space}")
+    print(f"[DEBUG] env.single_observation_space: {env.single_observation_space}")
+
     health_agent_model = "normal_agent.pt"
     tmp_rn = Runner(env, agent_cfg)
     tmp_rn.agent.load(health_agent_model)
@@ -231,7 +235,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             memory_size = tmp_agent_cfg["agent"]["rollouts"]
         memory = RandomMemory(
             memory_size=memory_size,
-            num_envs= classifier.get_class_envs(class_id),  # memoryの環境数はクラス毎の環境数に合わせる必要がある
+            num_envs=env.num_envs,  # 結局よく分からないので、全てのクラスが全ての環境を見ることにした。ただ、担当外の環境の経験は全て0にして関係無いようにする
             device=env.device,
         )
         # if classifier.get_class_envs(class_id) != target_scopes[class_id]:

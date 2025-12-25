@@ -28,6 +28,9 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to model checkpoint.")
 parser.add_argument("--models_dir", type=str, default=None, help="Path to models directory.")
+parser.add_argument("--online_testing", action="store_true", default=False, help="Run online testing during training.")
+parser.add_argument("--test_jointnet", action="store_true", default=False, help="Run joint network testing during training.")
+parser.add_argument("--log_nn_data", action="store_true", default=False, help="Log neural network data during training.")
 parser.add_argument(
     "--use_pretrained_checkpoint",
     action="store_true",
@@ -183,30 +186,120 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     sys.path.append("../")
     sys.path.append("../../")
+    target_envs = torch.arange(1,env.num_envs)  # 全ての環境のデータの平均値を取る
     import logger
-    joint_cfg_logger = logger.SettingLogger(env_cfg)
-    joint_cfg_logger.log_setting(os.path.join(log_dir, "play_joint_cfg.json"))
+    exp_val_logger = logger.ExperimentValueLogger(finish_step=args_cli.finish_step, log_file_name=os.path.join(log_dir, "play_log.csv"), target_envs=target_envs)
+    env.reset()
+    obs_logger = logger.DiscriminatorObsDataLogger(env=env)
+    joint_torque_logger = logger.JointTorqueLogger(
+                            env=env,
+                            joint_num=19,
+                            target_torque=50.0
+        )
 
-    import yaml
-    learned_model_conf = yaml.safe_load(open("learned_agent_cfg.yaml"))
     health_agent_model = "normal_agent.pt"
-    tmp_rn = Runner(env, learned_model_conf)
+    tmp_rn = Runner(env, agent_cfg)
     tmp_rn.agent.load(health_agent_model)
     health_agent = tmp_rn.agent
+    target_agents = []
 
-    from custom_parallel_trainer import CustomParallelAgentTrainer, AgentModelLoader 
-    loader = AgentModelLoader(model_path=args_cli.models_dir,yaml_conf_path="learned_agent_cfg.yaml",env=env)
+    from custom_parallel_trainer import AgentModelLoader 
+    pathes = AgentModelLoader.get_model_pathes(args_cli.models_dir)
+
+    from humanoidprac.tasks.manager_based.humanoidprac.mdp.events import EnvIdClassifier
+    classifier = EnvIdClassifier(env.num_envs)
+    agent_num = classifier.num_of_classes
+    success_rate_logger = logger.ClassSuccessRateLogger(classifier=classifier, log_dir=os.path.join(log_dir))
+    import copy
+    from skrl.utils.model_instantiators.torch import shared_model
+    from gymnasium.spaces import Box
+    from skrl.agents.torch.ppo import PPO
+    for class_id in range(agent_num):
+        # エージェントをコンフィグから簡単に構築できるのがRunnerしか無いから使う
+        # ログを書き込む場所を別にしたいので、書き換える
+        tmp_agent_cfg = copy.deepcopy(agent_cfg)
+        tmp_agent_cfg["agent"]["experiment"]["experiment_name"] += f"_model_{class_id}"
+        from skrl.resources.schedulers.torch import KLAdaptiveRL
+        tmp_agent_cfg["agent"]["learning_rate_scheduler"] = KLAdaptiveRL  # こっちではちゃんとクラスを入れないとダメ
+        from skrl.memories.torch import RandomMemory
+        # memory_sizeが-1の場合、rolloutsの値を使う
+        memory_size = tmp_agent_cfg["memory"]["memory_size"]
+        if memory_size < 0:
+            memory_size = tmp_agent_cfg["agent"]["rollouts"]
+        memory = RandomMemory(
+            memory_size=memory_size,
+            num_envs=env.num_envs,  # 結局よく分からないので、全てのクラスが全ての環境を見ることにした。ただ、担当外の環境の経験は全て0にして関係無いようにする
+            device=env.device,
+        )
+        # if classifier.get_class_envs(class_id) != target_scopes[class_id]:
+        #     raise ValueError(f"環境数の不整合があります。{classifier.get_class_envs(class_id)} != {target_scopes[class_id]}")
+        from numpy import float32
+        # 環境と同じ行動空間の次元を使う（health_agentとの互換性のため）
+        action_space = Box(low=-500.0, high=500.0, shape=env.action_space.shape, dtype=float32)
+        
+        # shared_modelsにはそれ用のinstantiatorがあるらしいぞ！
+        roles = ["policy", "value"]
+        structure = [tmp_agent_cfg["models"]["policy"]["class"], tmp_agent_cfg["models"]["value"]["class"]]
+        parameters = [tmp_agent_cfg["models"]["policy"], tmp_agent_cfg["models"]["value"]]
+        instance_shared_models = shared_model(
+            observation_space=env.observation_space,
+            action_space=action_space,
+            device=env.device,
+            structure=structure,
+            roles=roles,
+            parameters=parameters,
+        )
+        models = {}
+        models["policy"] = instance_shared_models
+        models["value"] = instance_shared_models
+        models["policy"].init_state_dict("policy")
+        models["value"].init_state_dict("value")
+        agent = PPO(
+            models=models,  # models dict
+            memory=memory,  # memory instance, or None if not required
+            cfg=tmp_agent_cfg["agent"],  # configuration dict (preprocessors, learning rate schedulers, etc.)
+            observation_space=env.observation_space,
+            action_space=action_space,
+            device=env.device,
+        )
+        agent.load(pathes[class_id])  # 初期化は健康状態モデルで行う
+        target_agents.append(agent)
+
+    from custom_parallel_trainer import CustomParallelAgentTrainer
     trainer = CustomParallelAgentTrainer(
         env=env,
-        agents=loader.get_agents(),
+        agents=target_agents,
         health_agent=health_agent,
         cfg=agent_cfg["trainer"],
     )
 
-    try:
-        trainer.eval()
-    except KeyboardInterrupt:
-        print("\n[INFO] Evaluation interrupted by user.")
+    if args_cli.online_testing:
+        discriminator_tester = logger.DiscriminatorTester(target_torque=50.0, joint_num=19, num_envs=env.num_envs)
+    else:
+        discriminator_tester = None
+    
+    if not args_cli.log_nn_data:
+        # nnのデータを記録しない場合はNoneで消しておく
+        obs_logger = None
+        joint_torque_logger = None
+
+    if args_cli.test_jointnet:
+        print("[INFO] Running joint network testing during evaluation.")
+        try:
+            trainer.eval_joint_model(
+                expdata_logger=exp_val_logger, 
+                success_rate_logger=success_rate_logger,
+                discriminator_tester=discriminator_tester, 
+                obs_logger=obs_logger,
+                joint_torque_logger=joint_torque_logger
+            )
+        except KeyboardInterrupt:
+            print("\n[INFO] Evaluation interrupted by user.")
+    else:
+        try:
+            trainer.eval(expdata_logger=exp_val_logger, success_rate_logger=success_rate_logger, discriminator_tester=discriminator_tester)
+        except KeyboardInterrupt:
+            print("\n[INFO] Evaluation interrupted by user.")
 
     # close the simulator
     env.close()

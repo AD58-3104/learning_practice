@@ -23,7 +23,7 @@ if __name__ == "__main__":
     model.load_state_dict(torch.load(args.model_path))
     model.eval()
 
-    batch_size = 4096
+    batch_size = 1024
     datasets = data.JointDataset(
                         data_dir="test_data/processed_data",
                         sequence_length=sequence_length,
@@ -41,20 +41,43 @@ if __name__ == "__main__":
     hidden_states = None
     total_correct = torch.zeros(setting.WHOLE_JOINT_NUM).to("cuda")
     total_real_failure = torch.zeros(setting.WHOLE_JOINT_NUM).to("cuda")
+    total_detect = torch.zeros(setting.WHOLE_JOINT_NUM).to("cuda")
     print("Starting evaluation... at ", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
 
     def print_result():
         for joint_id in range(setting.WHOLE_JOINT_NUM):
-            joint_accuracy = total_correct[joint_id].item() / total_samples
-            print(f"Joint {joint_id} accuracy: {joint_accuracy * 100:.2f}% , Real failures: {total_real_failure[joint_id].item()} samples")
+            if total_real_failure[joint_id].item() != 0:
+                joint_accuracy = total_correct[joint_id].item() / total_real_failure[joint_id].item()
+            else:
+                joint_accuracy = 0.0
+            print(f"Joint {joint_id} accuracy: {joint_accuracy * 100:.2f}% , {total_detect[joint_id].item()}  / {total_real_failure[joint_id].item()} [Detected failures / Real failures]")
 
     with torch.no_grad():
         for batch in tqdm.tqdm(dataloader, desc="Evaluating"):
             inputs, targets = batch
             inputs = inputs.to("cuda", non_blocking=True)
             targets = targets.to("cuda", non_blocking=True)
-            if batch_index % 100 == 0:
-                print(f"Online Input Range: Min={inputs.min().item():.3f}, Max={inputs.max().item():.3f}, Mean={inputs.mean().item():.3f}")
+            # if batch_index % 1 == 0:
+            #     good_idx = 11
+            #     bad_idx = 1
+            #     good_mean_val = inputs[0, :, good_idx].mean().item()
+            #     bad_mean_val = inputs[0, :, bad_idx].mean().item()
+            #     print(f"--- Check Joint Mapping ---")
+            #     print(inputs.shape)
+            #     print(f"Good Joint[{good_idx}]: InputMean={good_mean_val:.4f}")
+            #     print(f"Bad  Joint[{bad_idx}]: InputMean={bad_mean_val:.4f}")
+            
+            # if batch_index > 30:
+            #     seq_0 = inputs[0 , :-1, 0]
+            #     # バッチの1番目（時刻 t+1 ~ t+10）
+            #     seq_1 = prev_seq[0 , 1:, 0]
+            #     diff = (seq_0 - seq_1).abs().sum().item()
+            #     print(seq_0)
+            #     print(seq_1)
+            #     print(f"Sliding Window Difference Check (should be 0.0): {diff}")
+            #     break
+
+
             if inputs.size(0) != batch_size:
                 break # バッチサイズがbatch_sizeでない場合は終了
             outputs, hidden_states = model(inputs, hidden=None)
@@ -64,11 +87,13 @@ if __name__ == "__main__":
             else:
                 targets = targets.long()
             total_real_failure += targets.sum(dim=0)
-            total_correct += (outputs == targets).long().sum(dim=0)
+            total_detect += outputs.sum(dim=0)
+            total_correct += (outputs & targets).long().sum(dim=0)
             total_samples += targets.size(0)
             batch_index += 1
             if batch_index % 300 == 0:
                 print("Current accuracy after {batch_index} batches")
                 print_result()
+            prev_seq = inputs
     print("Final evaluation results:")
     print_result()

@@ -39,7 +39,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.actual_env_config:H1FlatEnvCfgRandomJointDebuff_PLAY",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:learned_agent_cfg.yaml",
     },
 )
 
@@ -70,26 +70,6 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.actual_env_config:H1FlatEnvCfg_PLAY",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
-    },
-)
-
-gym.register(
-    id="Humanoidprac-rough-play",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.actual_env_config:H1RoughEnvCfg_PLAY",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
-    },
-)
-
-gym.register(
-    id="Humanoidprac-push-exp",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.actual_env_config:H1FlatEnvCfg_PushExperiment",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
     },
 )

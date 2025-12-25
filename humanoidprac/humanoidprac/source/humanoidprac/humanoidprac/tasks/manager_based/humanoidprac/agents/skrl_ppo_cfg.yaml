@@ -1,4 +1,4 @@
-seed: 42
+seed: null
 
 
 # Models are instantiated using skrl's model instantiator utility
@@ -78,3 +78,4 @@ trainer:
   class: SequentialTrainer
   timesteps: 24000
   environment_info: log
+  trained_model_save_path: trained_models
