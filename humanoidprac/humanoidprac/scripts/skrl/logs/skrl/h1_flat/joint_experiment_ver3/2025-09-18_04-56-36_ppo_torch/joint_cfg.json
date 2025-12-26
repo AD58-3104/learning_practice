@@ -1,8 +1,0 @@
-{
-  "joint_names": [
-    "left_hip_pitch"
-  ],
-  "joint_torques": [
-    100.0
-  ]
-}
