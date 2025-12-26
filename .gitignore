@@ -15,3 +15,4 @@ dist/
 processed_data/
 learning_log/
 *.npz
+**/a.py
