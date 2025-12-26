@@ -94,6 +94,27 @@ def check_sliding():
         else:
             print("❌ DataLoader is broken.")
 
+def check_collate():
+    data_1 = torch.ones(5, 88)
+    data_1[0,0] = 9.0
+    label_1 = torch.ones(5,19)
+    label_1[0,0] = 8.0
+
+    data_2 = torch.ones(8, 88)
+    label_2 = torch.ones(8,19)
+    batch = [
+        {'data': data_1, 'label': label_1},
+        {'data': data_2, 'label': label_2}
+    ]
+
+    dt, label = data.collate_episodes(batch)
+    print("Padded Data Shape:", dt.shape)  # Expect (2, 8, 88)
+    print("Padded Label Shape:", label.shape)  # Expect (2, 8
+    print(dt[0])
+    print(label[0])
+    print(dt[0].shape)
+    print(label[0].shape)
+
 
 if __name__ == "__main__":
-    check_sliding()
+    check_collate()

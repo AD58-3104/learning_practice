@@ -1,5 +1,6 @@
 import torch
 import data
+from data import get_sequence_from_episode, get_episode_length
 import time
 import argparse
 import tqdm
@@ -23,7 +24,7 @@ if __name__ == "__main__":
     model.load_state_dict(torch.load(args.model_path))
     model.eval()
 
-    batch_size = 1024
+    batch_size = 1
     datasets = data.JointDataset(
                         data_dir="test_data/processed_data",
                         sequence_length=sequence_length,
@@ -33,7 +34,7 @@ if __name__ == "__main__":
                             datasets, 
                             batch_size=batch_size, 
                             shuffle=False, 
-                            collate_fn=data.collate_episodes,
+                            # collate_fn=data.collate_episodes,
                             num_workers=4
                         )
     total_samples = 0
@@ -53,10 +54,14 @@ if __name__ == "__main__":
             print(f"Joint {joint_id} accuracy: {joint_accuracy * 100:.2f}% , {total_detect[joint_id].item()}  / {total_real_failure[joint_id].item()} [Detected failures / Real failures]")
 
     with torch.no_grad():
-        for batch in tqdm.tqdm(dataloader, desc="Evaluating"):
-            inputs, targets = batch
-            inputs = inputs.to("cuda", non_blocking=True)
-            targets = targets.to("cuda", non_blocking=True)
+        for episode in tqdm.tqdm(dataloader, desc="Evaluating"):
+            ep_len = get_episode_length(episode)
+            hidden_states = None
+            for ep_idx in range(ep_len - sequence_length - 1): 
+                inputs, targets = get_sequence_from_episode(episode, ep_idx, sequence_length)
+                inputs = inputs.to("cuda", non_blocking=True)
+                targets = targets.to("cuda", non_blocking=True)
+                
             # if batch_index % 1 == 0:
             #     good_idx = 11
             #     bad_idx = 1
@@ -77,23 +82,20 @@ if __name__ == "__main__":
             #     print(f"Sliding Window Difference Check (should be 0.0): {diff}")
             #     break
 
-
-            if inputs.size(0) != batch_size:
-                break # バッチサイズがbatch_sizeでない場合は終了
-            outputs, hidden_states = model(inputs, hidden=None)
-            outputs = (outputs > 0.6).long()
-            if sequence_length > 1:
-                targets = targets[:,-1,:].long()
-            else:
-                targets = targets.long()
-            total_real_failure += targets.sum(dim=0)
-            total_detect += outputs.sum(dim=0)
-            total_correct += (outputs & targets).long().sum(dim=0)
-            total_samples += targets.size(0)
+                outputs, hidden_states = model(inputs, hidden=hidden_states)
+                outputs = (outputs > 0.6).long()
+                if sequence_length > 1:
+                    targets = targets[:,-1,:].long()
+                else:
+                    targets = targets.long()
+                total_real_failure += targets.sum(dim=0)
+                total_detect += outputs.sum(dim=0)
+                total_correct += (outputs & targets).long().sum(dim=0)
+                total_samples += targets.size(0)
             batch_index += 1
             if batch_index % 300 == 0:
                 print("Current accuracy after {batch_index} batches")
                 print_result()
-            prev_seq = inputs
+            # prev_seq = inputs
     print("Final evaluation results:")
     print_result()

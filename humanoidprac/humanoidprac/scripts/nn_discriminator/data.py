@@ -1,4 +1,5 @@
 from torch.utils.data import Dataset
+import torch.nn.functional as F
 import torch
 from pathlib import Path
 import tqdm
@@ -6,6 +7,8 @@ from multiprocessing import Pool, cpu_count, Manager, Lock
 import bisect
 import numpy as np
 import copy
+
+min_save_episode_length = 90 # これより短いエピソードは保存しない 
 
 class DataMerger:
     def __init__(self, output_dir="processed_data", save_count=None, lock=None):
@@ -45,7 +48,7 @@ class DataMerger:
             start_index = terminated_index + 1
 
         # 残ったやつを保存
-        if start_index <= last_index:
+        if start_index <= last_index and (last_index - start_index ) > min_save_episode_length:
             episode_obs = obs_data[start_index:last_index + 1]
             episode_events = event_data[start_index:last_index + 1]
             # 先頭2列のstepとterminatedを除いて保存
@@ -78,7 +81,8 @@ class DataMerger:
 class JointDataset(Dataset):
     def __init__(self, data_dir: str, sequence_length: int = 1,
                  device: torch.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
-                 cache_in_memory: bool = False, use_mmap: bool = True):
+                 cache_in_memory: bool = False, use_mmap: bool = True,
+                 episode_mode: bool = True):
         """
         Args:
             data_dir: データディレクトリのパス
@@ -91,6 +95,7 @@ class JointDataset(Dataset):
         self.data_dir = Path(data_dir)
         self.cache_in_memory = cache_in_memory
         self.use_mmap = use_mmap
+        self.episode_mode = episode_mode
 
         all_data_files = sorted(list(self.data_dir.glob("*_data.npz")))
         all_label_files = sorted(list(self.data_dir.glob("*_labels.npz")))
@@ -116,6 +121,7 @@ class JointDataset(Dataset):
         self.episode_lengths = []
         self.cumulative_lengths = [0] # 各エピソード長の累積和（先頭は0）
         self.total_length = 0
+        self.total_episodes = 0
 
         # メモリキャッシュ用
         self.data_cache = []
@@ -143,6 +149,7 @@ class JointDataset(Dataset):
                 self.label_file_list.append(label_file)
                 self.episode_lengths.append(label_length)
                 self.total_length += label_length
+                self.total_episodes += 1
                 self.cumulative_lengths.append(self.total_length)
 
                 # メモリキャッシュを使用する場合
@@ -179,9 +186,48 @@ class JointDataset(Dataset):
         self._update_sequence_cumulative_lengths()
 
     def __len__(self):
-        return self.sequence_total_length
-
+        if self.episode_mode:
+            return self.total_episodes
+        else:
+            return self.sequence_total_length
+        
     def __getitem__(self, idx):
+        if self.episode_mode:
+            return self.get_episode(idx)
+        else:
+            return self.get_single_step(idx)
+
+    def get_episode(self, episode_idx):
+        if episode_idx < 0:
+            episode_idx += self.total_episodes
+        if episode_idx < 0 or episode_idx >= self.total_episodes:
+            raise IndexError("Index out of range")
+
+        # メモリキャッシュを使用している場合
+        if self.cache_in_memory:
+            data_arr = self.data_cache[episode_idx]
+            label_arr = self.label_cache[episode_idx]
+        # メモリマップドファイルを使用する場合
+        elif self.use_mmap:
+            # npzファイルをメモリマップモードで読み込み
+            with np.load(self.data_file_list[episode_idx], mmap_mode='r') as data_file:
+                data_arr = data_file['data'].astype(np.float32)
+            with np.load(self.label_file_list[episode_idx], mmap_mode='r') as label_file:
+                label_arr = label_file['data'].astype(np.float32)
+        # npzファイルを通常読み込み
+        else:
+            with np.load(self.data_file_list[episode_idx]) as data_file:
+                data_arr = data_file['data'].astype(np.float32)
+            with np.load(self.label_file_list[episode_idx]) as label_file:
+                label_arr = label_file['data'].astype(np.float32)
+
+        # テンソル化（全データを含む2次元テンソル）
+        data = torch.from_numpy(data_arr).to(dtype=torch.float32)
+        label = torch.from_numpy(label_arr).to(dtype=torch.float32)
+
+        return {'data': data, 'label': label}
+
+    def get_single_step(self, idx):
         # 負のインデックス対応
         if idx < 0:
             idx += self.sequence_total_length
@@ -228,12 +274,36 @@ class JointDataset(Dataset):
 
         return {'data': data, 'label': label}
 
-def collate_episodes(batch):
+def collate_singlesteps(batch):
     data = torch.stack([b['data'] for b in batch], dim=0)
     label = torch.stack([b['label'] for b in batch], dim=0)
     return data, label
 
+def collate_episodes(batch):
+    max_len = max(ep['data'].shape[0] for ep in batch)
+    padded_data = []
+    padded_label = []
+    for ep in batch:
+        pad_len = max_len - ep['data'].shape[0]
+        padded_data.append(F.pad(ep['data'], (0, 0, 0, pad_len)))
+        padded_label.append(F.pad(ep['label'], (0, 0, 0, pad_len)))
+    return torch.stack(padded_data), torch.stack(padded_label)
 
+def get_sequence_from_episode(episode, index, seq_length):
+    """エピソードから指定されたインデックスとシーケンス長でデータを取得"""
+    data = episode['data']
+    label = episode['label']
+    if index + seq_length > data.shape[1]:
+        raise IndexError("Sequence index out of range")
+    # バッチ次元を保持しつつ、時間次元をスライス
+    data = data[:, index:index + seq_length, :]
+    label = label[:, index:index + seq_length, :]
+    return data, label
+
+def get_episode_length(episode):
+    # shape[1]が時間次元（バッチ次元の次）
+    return episode['data'].shape[-2]
+ 
 def file_counts_in_directory(directory: str):
     import os
     files = [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
