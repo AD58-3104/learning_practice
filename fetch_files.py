@@ -124,6 +124,7 @@ class SCPWorker(QThread):
             sftp = ssh.open_sftp()
 
             for remote_item in self.remote_files:
+                remote_item = Path(remote_item).as_posix()
                 if remote_item.endswith('/'):
                     # Directory copy
                     local_dir = os.path.join(self.local_dir, os.path.basename(remote_item.rstrip('/')))
