@@ -62,7 +62,7 @@ class DataMerger:
         self.file_index = 0
 
     def process(self, obs_data_path, event_data_path, output_file_name):
-        print(f"Processing files: {obs_data_path}, {event_data_path}")
+        # print(f"Processing files: {obs_data_path}, {event_data_path}")
 
         # データの読み込み
         obs_data_fd = open(obs_data_path, 'rb')
@@ -113,7 +113,7 @@ class DataMerger:
         np.savez_compressed(data_file_name, data=obs)
         np.savez_compressed(label_file_name, data=events)
 
-        print(f"Saved {obs.shape[0]} lines ➡ {data_file_name} and {events.shape[0]} lines ➡ {label_file_name}")
+        # print(f"Saved {obs.shape[0]} lines ➡ {data_file_name} and {events.shape[0]} lines ➡ {label_file_name}")
 
 
 class JointDataset(Dataset):
