@@ -55,7 +55,6 @@ def check_dataset_integrity():
 
 # check_dataloader_sliding.py
 def check_sliding():
-    # Shuffle=False にしないとスライディングしません
     datasets = data.JointDataset(
                         data_dir="test_data/processed_data",
                         sequence_length=10,

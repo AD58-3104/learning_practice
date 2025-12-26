@@ -45,10 +45,8 @@ class JointGRUNet(nn.Module):
 
         # x: (batch, sequence, input_size) when batch_first=True
         out, next_hidden = self.gru(x, hidden)
-        last_out = out[:, -1, :]
         # 全結合層に入れる前にドロップアウトを適用
-        last_out = self.dropout(last_out)
+        out = self.dropout(out)
         # out: (batch, sequence, hidden_size) when batch_first=True
-        out = self.fc(last_out)  # 全バッチの最後のタイムステップを使用
+        out = self.fc(out)  # 全バッチの最後のタイムステップを使用
         return out, next_hidden
-    

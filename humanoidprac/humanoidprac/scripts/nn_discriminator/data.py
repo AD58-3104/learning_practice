@@ -7,8 +7,46 @@ from multiprocessing import Pool, cpu_count, Manager, Lock
 import bisect
 import numpy as np
 import copy
+from concurrent.futures import ThreadPoolExecutor
+import os
 
-min_save_episode_length = 90 # これより短いエピソードは保存しない 
+min_save_episode_length = 90 # これより短いエピソードは保存しない
+
+def _load_file_pair(args):
+    """並列読み込み用のヘルパー関数"""
+    key, data_file, label_file, cache_in_memory = args
+    try:
+        label = np.load(label_file)["data"]
+        data = np.load(data_file)["data"]
+
+        label_length = len(label)
+        data_length = len(data)
+
+        # 長さの検証
+        if label_length != data_length:
+            return None, f"Warning: Length mismatch - skipping {data_file.name} ({data_length} rows) and {label_file.name} ({label_length} rows)"
+
+        if label_length == 0:
+            return None, None  # 空のファイルはスキップ
+
+        # メモリキャッシュを使用する場合
+        if cache_in_memory:
+            data_arr = data.astype(np.float32)
+            label_arr = label.astype(np.float32)
+        else:
+            data_arr = None
+            label_arr = None
+
+        return {
+            'data_file': data_file,
+            'label_file': label_file,
+            'length': label_length,
+            'data_cache': data_arr,
+            'label_cache': label_arr
+        }, None
+
+    except Exception as e:
+        return None, f"Warning: Error loading {data_file.name} or {label_file.name}: {e}"
 
 class DataMerger:
     def __init__(self, output_dir="processed_data", save_count=None, lock=None):
@@ -81,7 +119,7 @@ class DataMerger:
 class JointDataset(Dataset):
     def __init__(self, data_dir: str, sequence_length: int = 1,
                  device: torch.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"),
-                 cache_in_memory: bool = False, use_mmap: bool = True,
+                 cache_in_memory: bool = True, use_mmap: bool = True,
                  episode_mode: bool = True):
         """
         Args:
@@ -127,45 +165,39 @@ class JointDataset(Dataset):
         self.data_cache = []
         self.label_cache = []
 
-        for key in common_keys:
-            data_file = data_dict[key]
-            label_file = label_dict[key]
-            try:
-                label = np.load(label_file)["data"]
-                data = np.load(data_file)["data"]
+        # 並列読み込み処理
+        max_workers = min(os.cpu_count() or 4, len(common_keys))
+        load_args = [
+            (key, data_dict[key], label_dict[key], cache_in_memory)
+            for key in common_keys
+        ]
 
-                label_length = len(label)
-                data_length = len(data)
+        print(f"Loading {len(common_keys)} episodes using {max_workers} threads...")
 
-                # 長さの検証
-                if label_length != data_length:
-                    print(f"Warning: Length mismatch - skipping {data_file.name} ({data_length} rows) and {label_file.name} ({label_length} rows)")
-                    continue
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(tqdm.tqdm(
+                executor.map(_load_file_pair, load_args),
+                total=len(load_args),
+                desc="Loading episodes"
+            ))
 
-                if label_length == 0:
-                    continue  # 空のファイルはスキップ
-
-                self.data_file_list.append(data_file)
-                self.label_file_list.append(label_file)
-                self.episode_lengths.append(label_length)
-                self.total_length += label_length
-                self.total_episodes += 1
-                self.cumulative_lengths.append(self.total_length)
-
-                # メモリキャッシュを使用する場合
-                if cache_in_memory:
-                    data_arr = data.astype(np.float32)
-                    label_arr = label.astype(np.float32)
-                    self.data_cache.append(data_arr)
-                    self.label_cache.append(label_arr)
-                else:
-                    self.data_cache.append(None)
-                    self.label_cache.append(None)
-
-            except Exception as e:
-                # 読み込みエラーが発生した場合はスキップ
-                print(f"Warning: Error loading {data_file.name} or {label_file.name}: {e}")
+        # 結果を集約
+        for result, error_msg in results:
+            if error_msg:
+                print(error_msg)
                 continue
+
+            if result is None:
+                continue
+
+            self.data_file_list.append(result['data_file'])
+            self.label_file_list.append(result['label_file'])
+            self.episode_lengths.append(result['length'])
+            self.total_length += result['length']
+            self.total_episodes += 1
+            self.cumulative_lengths.append(self.total_length)
+            self.data_cache.append(result['data_cache'])
+            self.label_cache.append(result['label_cache'])
 
         self.file_num = len(self.data_file_list)
         self.sequence_length = sequence_length  # 時系列ではないやつなら1にする。
@@ -290,11 +322,14 @@ def collate_episodes(batch):
     return torch.stack(padded_data), torch.stack(padded_label)
 
 def get_sequence_from_episode(episode, index, seq_length):
-    """エピソードから指定されたインデックスとシーケンス長でデータを取得"""
+    """
+    エピソードから指定されたインデックスとシーケンス長でデータを取得
+    指定されたエピソード長に満たない場合、その長さまでを取得する
+    """
     data = episode['data']
     label = episode['label']
-    if index + seq_length > data.shape[1]:
-        raise IndexError("Sequence index out of range")
+    if index + seq_length > data.shape[-2]:
+        seq_length = data.shape[-2] - index
     # バッチ次元を保持しつつ、時間次元をスライス
     data = data[:, index:index + seq_length, :]
     label = label[:, index:index + seq_length, :]

@@ -57,45 +57,26 @@ if __name__ == "__main__":
         for episode in tqdm.tqdm(dataloader, desc="Evaluating"):
             ep_len = get_episode_length(episode)
             hidden_states = None
-            for ep_idx in range(ep_len - sequence_length - 1): 
+            for ep_idx in range(0, ep_len - sequence_length, sequence_length):
                 inputs, targets = get_sequence_from_episode(episode, ep_idx, sequence_length)
                 inputs = inputs.to("cuda", non_blocking=True)
                 targets = targets.to("cuda", non_blocking=True)
-                
-            # if batch_index % 1 == 0:
-            #     good_idx = 11
-            #     bad_idx = 1
-            #     good_mean_val = inputs[0, :, good_idx].mean().item()
-            #     bad_mean_val = inputs[0, :, bad_idx].mean().item()
-            #     print(f"--- Check Joint Mapping ---")
-            #     print(inputs.shape)
-            #     print(f"Good Joint[{good_idx}]: InputMean={good_mean_val:.4f}")
-            #     print(f"Bad  Joint[{bad_idx}]: InputMean={bad_mean_val:.4f}")
-            
-            # if batch_index > 30:
-            #     seq_0 = inputs[0 , :-1, 0]
-            #     # バッチの1番目（時刻 t+1 ~ t+10）
-            #     seq_1 = prev_seq[0 , 1:, 0]
-            #     diff = (seq_0 - seq_1).abs().sum().item()
-            #     print(seq_0)
-            #     print(seq_1)
-            #     print(f"Sliding Window Difference Check (should be 0.0): {diff}")
-            #     break
 
+                # モデルの出力: (batch, seq_len, 19)
                 outputs, hidden_states = model(inputs, hidden=hidden_states)
-                outputs = (outputs > 0.6).long()
-                if sequence_length > 1:
-                    targets = targets[:,-1,:].long()
-                else:
-                    targets = targets.long()
-                total_real_failure += targets.sum(dim=0)
-                total_detect += outputs.sum(dim=0)
-                total_correct += (outputs & targets).long().sum(dim=0)
-                total_samples += targets.size(0)
+                outputs = (outputs > 0.5).long()
+                targets = targets.long()
+
+                # バッチ次元とシーケンス次元をまとめて集計
+                # sum(dim=0)でバッチ次元を消し、sum(dim=0)でシーケンス次元を消す
+                # または sum(dim=(0,1)) で一度に両方消す
+                total_real_failure += targets.sum(dim=(0, 1))  # -> [19]
+                total_detect += outputs.sum(dim=(0, 1))  # -> [19]
+                total_correct += (outputs & targets).long().sum(dim=(0, 1))  # -> [19]
+                total_samples += targets.size(0) * targets.size(1)  # batch * seq_len
             batch_index += 1
             if batch_index % 300 == 0:
-                print("Current accuracy after {batch_index} batches")
+                print(f"Current accuracy after {batch_index} batches")
                 print_result()
-            # prev_seq = inputs
     print("Final evaluation results:")
     print_result()
