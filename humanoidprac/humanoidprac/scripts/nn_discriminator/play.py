@@ -18,9 +18,10 @@ if __name__ == "__main__":
     input_size = setting.OBS_DIMENSION    # 観測は88次元
     hidden_size = setting.HIDDEN_SIZE
     output_size = setting.WHOLE_JOINT_NUM   # 19個の関節それぞれに故障があるかどうかを判断
-    sequence_length = setting.SEQUENCE_LENGTH
+    sequence_length = 100
+    num_layers = setting.NUM_LAYERS
 
-    model = JointGRUNet(input_size, hidden_size, output_size).to("cuda")
+    model = JointGRUNet(input_size, hidden_size, output_size,num_layers=num_layers).to("cuda")
     model.load_state_dict(torch.load(args.model_path))
     model.eval()
 

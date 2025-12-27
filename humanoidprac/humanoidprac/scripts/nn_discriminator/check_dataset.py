@@ -29,6 +29,23 @@ def check_failures(datasets):
         joint_failure_counts += label_sum
     print(f"Episode Label Sum: {joint_failure_counts}")
 
+def check_std(datasets):
+    mu = torch.zeros(setting.OBS_DIMENSION)
+    sigma = torch.zeros(setting.OBS_DIMENSION)
+    total_length = 0
+    for episode in datasets:
+        obs = episode["data"]
+        mu += obs.sum(dim=0)
+        sigma += (obs ** 2).sum(dim=0)
+        total_length += data.get_episode_length(episode)
+    
+    data_std = torch.sqrt(sigma / total_length - (mu / total_length) ** 2)
+
+    print(f"Data Standard Deviation: {data_std}")
+    print(f"Min STD: {data_std.min().item()}, Max STD: {data_std.max().item()}")
+    print(f"Mu: {mu / total_length}")
+    print(f"Sigma: {sigma / total_length}")
+
 if __name__ == "__main__":
     datasets = data.JointDataset(
                 data_dir="processed_data",
@@ -43,5 +60,6 @@ if __name__ == "__main__":
                         num_workers=6,
                         pin_memory=True  # CPU→GPU転送を高速化
                     )
+    check_std(datasets)
     check_length(datasets)
     check_failures(datasets)

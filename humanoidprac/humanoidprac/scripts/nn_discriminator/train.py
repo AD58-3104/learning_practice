@@ -137,12 +137,15 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Train a joint network model")
     parser.add_argument("--epoch", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("--checkpoint", type=str, default="", help="Path to model checkpoint to load")
     args = parser.parse_args()
 
     sequence_length = setting.SEQUENCE_LENGTH
     input_size = setting.OBS_DIMENSION    # 観測は88次元
     hidden_size = setting.HIDDEN_SIZE
     output_size = setting.WHOLE_JOINT_NUM   # 19個の関節それぞれに故障があるかどうかを判断
+    num_layers = setting.NUM_LAYERS      # GRUの層数
+    chunk_size = 200
 
     datasets = data.JointDataset(
                 data_dir="processed_data",
@@ -160,7 +163,12 @@ if __name__ == "__main__":
 
     failure_joint_list = [0, 1, 3, 4, 7, 8, 11, 12]
 
-    model = JointGRUNet(input_size, hidden_size, output_size).to("cuda")
+    if args.checkpoint != "":
+        print(f"Loading model from {args.checkpoint}")
+        model = JointGRUNet(input_size, hidden_size, output_size, num_layers=num_layers).to("cuda")
+        model.load_state_dict(torch.load(args.checkpoint))
+    else:
+        model = JointGRUNet(input_size, hidden_size, output_size, num_layers=num_layers).to("cuda")
     trainer = Trainer(model, active_joint_indices=failure_joint_list)
     total_loss = 0.0
 
@@ -171,7 +179,7 @@ if __name__ == "__main__":
         total_accuracy = 0.0
         total_episodes = 1
         for episode in dataloader:
-            loss, accuracy = trainer.train_episode(episode=episode, sequence_length=200)
+            loss, accuracy = trainer.train_episode(episode=episode, sequence_length=chunk_size)
             total_loss += loss
             total_accuracy += accuracy
             trainer.writer.add_scalar("info / loss", total_loss / total_episodes, total_episodes)

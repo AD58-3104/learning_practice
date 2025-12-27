@@ -9,6 +9,8 @@ import numpy as np
 import copy
 from concurrent.futures import ThreadPoolExecutor
 import os
+import typing
+from sklearn.preprocessing import StandardScaler
 
 min_save_episode_length = 90 # これより短いエピソードは保存しない
 
@@ -115,6 +117,38 @@ class DataMerger:
 
         # print(f"Saved {obs.shape[0]} lines ➡ {data_file_name} and {events.shape[0]} lines ➡ {label_file_name}")
 
+class DataPreprocessor:
+    def __init__(self):
+        self.scaler : typing.Optional[StandardScaler] = None
+
+    def partial_fit(self, data):
+        if self.scaler is None:
+            self.scaler = StandardScaler()
+        self.scaler.partial_fit(data)
+
+    def load_scaler(self, path = "scaler.pkl"):
+        import pickle 
+        with open(path, 'rb') as f:
+            self.scaler = pickle.load(f)
+    
+    def save_scaler(self, path="scaler.pkl"):
+        import pickle 
+        with open(path, "wb") as f:
+            pickle.dump(self.scaler, f)
+        print("完了: scaler.pkl を保存しました。")
+        print(f"計算した平均: {self.scaler.mean_}")
+
+    def process_tensor(self, tensor):
+        shape = tensor.shape
+        flat_tensor = tensor.view(-1, shape[-1])
+        scaled_flat = self.scaler.transform(flat_tensor.cpu().numpy())
+        scaled_tensor = torch.from_numpy(scaled_flat).view(shape).to(tensor.device)
+        return scaled_tensor
+
+    def process_numpy(self, array):
+        scaled_array = self.scaler.transform(array)
+        return scaled_array
+
 
 class JointDataset(Dataset):
     def __init__(self, data_dir: str, sequence_length: int = 1,
@@ -151,7 +185,7 @@ class JointDataset(Dataset):
             label_dict[key] = label_file
 
         # 両方に存在するキーのみを使用
-        common_keys = sorted(set(data_dict.keys()) & set(label_dict.keys()))
+        self.common_keys = sorted(set(data_dict.keys()) & set(label_dict.keys()))
 
         # 空でないファイルのみをフィルタリング
         self.data_file_list = []
@@ -166,13 +200,13 @@ class JointDataset(Dataset):
         self.label_cache = []
 
         # 並列読み込み処理
-        max_workers = min(os.cpu_count() or 4, len(common_keys))
+        max_workers = min(os.cpu_count() or 4, len(self.common_keys))
         load_args = [
             (key, data_dict[key], label_dict[key], cache_in_memory)
-            for key in common_keys
+            for key in self.common_keys
         ]
 
-        print(f"Loading {len(common_keys)} episodes using {max_workers} threads...")
+        print(f"Loading {len(self.common_keys)} episodes using {max_workers} threads...")
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             results = list(tqdm.tqdm(
@@ -202,6 +236,26 @@ class JointDataset(Dataset):
         self.file_num = len(self.data_file_list)
         self.sequence_length = sequence_length  # 時系列ではないやつなら1にする。
         self._update_sequence_cumulative_lengths()
+
+    def preprocess_all_data(self):
+        print("Starting data preprocessing...")
+        if not self.cache_in_memory:
+            print("Error: Cannot preprocess data when not caching in memory.")
+            return
+        preprocessor = DataPreprocessor()
+        for idx in range(self.total_episodes):
+            data = self.data_cache[idx]
+            preprocessor.partial_fit(data)
+        preprocessor.save_scaler()
+
+        for filename in tqdm.tqdm(self.common_keys):
+            filename = filename + "_data.npz"
+            with open(filename, 'rb') as f:
+                data = np.load(f)["data"]
+            scaled_data = preprocessor.process_numpy(data)
+            with open(filename, 'wb') as f:
+                np.savez_compressed(f, data=scaled_data)
+
 
     def _update_sequence_cumulative_lengths(self):
         """sequence_lengthを考慮した累積長を再計算"""
