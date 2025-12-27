@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import os
 import typing
 from sklearn.preprocessing import StandardScaler
+from torch.nn.utils.rnn import pad_sequence
 
 min_save_episode_length = 90 # これより短いエピソードは保存しない
 
@@ -365,15 +366,29 @@ def collate_singlesteps(batch):
     label = torch.stack([b['label'] for b in batch], dim=0)
     return data, label
 
-def collate_episodes(batch):
-    max_len = max(ep['data'].shape[0] for ep in batch)
-    padded_data = []
-    padded_label = []
-    for ep in batch:
-        pad_len = max_len - ep['data'].shape[0]
-        padded_data.append(F.pad(ep['data'], (0, 0, 0, pad_len)))
-        padded_label.append(F.pad(ep['label'], (0, 0, 0, pad_len)))
-    return torch.stack(padded_data), torch.stack(padded_label)
+def collate_fn_pad_batch(batch):
+    """
+    batch: [{'data': ..., 'label': ...}, {'data': ..., 'label': ...}, ...] のリスト
+    data shape: (Time, Input_Dim)
+    label shape: (Time, Output_Dim)
+    """
+    inputs_list = [b['data'] for b in batch]
+    targets_list = [b['label'] for b in batch]
+    
+    # 1. バッチ内の最大長に合わせてパディング (batch_first=True)
+    # 値は 0 で埋めます（後でマスクで無効化するため安全です）
+    padded_inputs = pad_sequence(inputs_list, batch_first=True, padding_value=0.0)
+    padded_targets = pad_sequence(targets_list, batch_first=True, padding_value=0.0)
+    
+    # 2. マスクの作成
+    lengths = torch.tensor([x.size(0) for x in inputs_list])
+    max_len = padded_inputs.size(1)
+    
+    # (Batch, Time, 1) のマスクを作成
+    # targetsの次元に合わせるため、最後の次元を追加しています
+    mask = (torch.arange(max_len)[None, :] < lengths[:, None]).float().unsqueeze(-1)
+    
+    return padded_inputs, padded_targets, mask
 
 def get_sequence_from_episode(episode, index, seq_length):
     """

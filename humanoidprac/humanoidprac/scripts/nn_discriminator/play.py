@@ -8,18 +8,35 @@ import setting
 import torch.multiprocessing as mp
 mp.set_start_method('spawn', force=True)
 
+def get_latest_model_path(model_dir="models")-> str:
+    import os
+    model_dirs = [d for d in os.listdir(model_dir) if os.path.isdir(os.path.join(model_dir, d))]
+    sorted_dirs = sorted(model_dirs,reverse=True)
+    if sorted_dirs:
+        latest_dir = sorted_dirs[0]
+        models = [f for f in os.listdir(os.path.join(model_dir, latest_dir)) if f.endswith('.pth')]
+        sorted_models = sorted(models, key=lambda x: int(x.split('_')[-1].split('.pth')[0]))  # エポック番号でソート
+        model_path = os.path.join(model_dir, latest_dir, sorted_models[-1])
+        print(f"Using latest model at: {model_path}")
+        return model_path
+    else:
+        raise FileNotFoundError("No model directories found.")
+
 if __name__ == "__main__":
     from joint_model import JointGRUNet
 
     parser = argparse.ArgumentParser(description="Evaluate JointGRUNet model")
-    parser.add_argument("--model-path", type=str, default="models/joint_net_epoch_5.pth", help="Path to the trained model")
+    parser.add_argument("--model-path", type=str, default=get_latest_model_path(), help="Path to the trained model")
     args = parser.parse_args()
 
+    sequence_length = setting.SEQUENCE_LENGTH
     input_size = setting.OBS_DIMENSION    # 観測は88次元
     hidden_size = setting.HIDDEN_SIZE
     output_size = setting.WHOLE_JOINT_NUM   # 19個の関節それぞれに故障があるかどうかを判断
-    sequence_length = 100
-    num_layers = setting.NUM_LAYERS
+    num_layers = setting.NUM_LAYERS      # GRUの層数
+    chunk_size = setting.CHUNK_SIZE     # 学習時のチャンクサイズ
+    max_grad_norm = setting.MAX_GRAD_NORM # 勾配クリッピングの最大ノルム
+    batch_size = setting.BATCH_SIZE
 
     model = JointGRUNet(input_size, hidden_size, output_size,num_layers=num_layers).to("cuda")
     model.load_state_dict(torch.load(args.model_path))
@@ -33,9 +50,9 @@ if __name__ == "__main__":
                         )
     dataloader = torch.utils.data.DataLoader(
                             datasets, 
-                            batch_size=batch_size, 
-                            shuffle=False, 
-                            # collate_fn=data.collate_episodes,
+                            batch_size=batch_size,
+                            shuffle=False,
+                            # collate_fn=data.collate_fn_pad_batch,
                             num_workers=4
                         )
     total_samples = 0
@@ -58,8 +75,8 @@ if __name__ == "__main__":
         for episode in tqdm.tqdm(dataloader, desc="Evaluating"):
             ep_len = get_episode_length(episode)
             hidden_states = None
-            for ep_idx in range(0, ep_len - sequence_length, sequence_length):
-                inputs, targets = get_sequence_from_episode(episode, ep_idx, sequence_length)
+            for ep_idx in range(0, ep_len - chunk_size, chunk_size):
+                inputs, targets = get_sequence_from_episode(episode, ep_idx, chunk_size)
                 inputs = inputs.to("cuda", non_blocking=True)
                 targets = targets.to("cuda", non_blocking=True)
 

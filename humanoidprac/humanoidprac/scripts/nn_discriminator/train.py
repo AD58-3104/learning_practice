@@ -5,17 +5,19 @@ import time
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 import setting
+import yaml
+import os
 
 class Trainer:
-    def __init__(self, model, active_joint_indices=None):
+    def __init__(self, model, active_joint_indices=None, max_grad_norm=1.0, logdir = "learning_log/" + time.strftime("%Y%m%d-%H%M%S")):
         self.model = model
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-    # 【重要】マスク処理をするため、ここでは平均(mean)を取らず、個別の損失を返すように設定
+        # 【重要】マスク処理をするため、ここでは平均(mean)を取らず、個別の損失を返すように設定
         self.error_function = torch.nn.BCELoss(reduction='none')        
         self.step = 0
         self.running_loss = 0.0
-        current_datetime = time.strftime("%Y%m%d-%H%M%S")
-        self.writer = SummaryWriter(log_dir=f"learning_log/{current_datetime}")
+        self.writer = SummaryWriter(log_dir=logdir)
+        self.max_grad_norm = max_grad_norm
         
         if active_joint_indices is None:
             # 指定無しなら全ての関節を対象とする
@@ -24,42 +26,35 @@ class Trainer:
         for idx in active_joint_indices:
             self.joint_mask[0, 0, idx] = 1.0
         print(f" Joint Mask: {self.joint_mask}")
+        self.save_path = f"models/{logdir.split('/')[-1]}"
+        os.makedirs(self.save_path, exist_ok=True) 
+
 
     def train_step(self, inputs, targets, mask, hidden_states):
-        """
-        inputs: (Batch, Seq_Len, Input_Dim)
-        targets: (Batch, Seq_Len, Output_Dim)
-        mask: (Batch, Seq_Len, 1) 
-        """
         self.model.train()
         self.optimizer.zero_grad()
-        # モデルに入力
         outputs, next_hidden_states = self.model(inputs, hidden=hidden_states)
-        # 【修正点】マスクをターゲットと同じ形 (Batch, Seq, 19) に拡張します
-        # これにより、sum()を取った時に 19関節分 × タイムステップ の総数が分母になります
+        # マスクの適用
         expanded_mask = mask.expand_as(targets)
-        # expanded_mask (Batch, Seq, 1) * joint_mask (1, 1, 19) 
-        # = final_mask (Batch, Seq, 19)
         final_mask = expanded_mask * self.joint_mask
-
-        # --- 損失の計算 ---
+        # 損失計算 (Batch全体で一括計算)
         loss_raw = self.error_function(outputs, targets)
         masked_loss = loss_raw * final_mask
-        # 修正: 分母を final_mask.sum() に変更
-        loss = masked_loss.sum() / final_mask.sum()
+        # 分母が0になるのを防ぐための小さな値を足すガードを入れるのが一般的です
+        loss = masked_loss.sum() / (final_mask.sum() + 1e-8)
         loss.backward()
+        # 勾配クリッピング
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.max_grad_norm)
+
         self.optimizer.step()
         self.step += 1
         self.running_loss += loss.item()
-        # --- 精度の計算 ---
         outputs_bin = (outputs > 0.5).float()
         correct = (outputs_bin == targets).float() * final_mask
-        # 修正: 分母を final_mask.sum() に変更
-        accuracy = correct.sum() / final_mask.sum()
-        print_step = 1000
+        accuracy = correct.sum() / (final_mask.sum() + 1e-8)
+        print_step = 200
         if self.step % print_step == 0:
-            if self.step % 5000 == 0:
-                print(f"Step {self.step}, Loss: {self.running_loss / print_step:.4f}")
+            # print(f"Step {self.step}, Loss: {self.running_loss / print_step:.4f}")
             self.writer.add_scalar("info / running_loss", self.running_loss / print_step, global_step=self.step)
             self.running_loss = 0.0
         next_hidden_states = next_hidden_states.detach()
@@ -125,8 +120,57 @@ class Trainer:
             return 0.0, 0.0
         return total_loss / count, total_accuracy / count
 
+    def train_batch_loop(self, batch_data, chunk_size=200):
+        """
+        DataLoaderから来た1バッチ分のデータを処理する関数
+        batch_data: (inputs, targets, mask) from collate_fn
+        inputs shape: (Batch, Max_Len, Input_Dim)
+        """
 
-    def save_model(self, path):
+        inputs_full, targets_full, mask_full = batch_data
+        inputs_full = inputs_full.to("cuda", non_blocking=True)
+        targets_full = targets_full.to("cuda", non_blocking=True)
+        mask_full = mask_full.to("cuda", non_blocking=True)
+
+        batch_size, max_len, _ = inputs_full.shape
+        hidden_states = None
+        
+        total_loss = 0.0
+        total_acc = 0.0
+        count = 0
+
+        # 2. 時間軸（Max_Len）に沿って chunk_size ずつ進むループ
+        for t in range(0, max_len, chunk_size):
+            # スライス範囲を計算
+            end_t = min(t + chunk_size, max_len)
+            
+            # チャンクの切り出し
+            input_chunk = inputs_full[:, t:end_t, :]
+            target_chunk = targets_full[:, t:end_t, :]
+            mask_chunk = mask_full[:, t:end_t, :]
+            
+            # このチャンクのmaskが全て0なら抜ける
+            if mask_chunk.sum() == 0:
+                break
+
+            # train_step を実行
+            loss, acc, hidden_states = self.train_step(
+                input_chunk, 
+                target_chunk, 
+                mask_chunk, 
+                hidden_states
+            )
+            
+            total_loss += loss
+            total_acc += acc
+            count += 1
+            
+        return total_loss / max(count, 1), total_acc / max(count, 1)
+
+
+    def save_model(self, filename):
+        import os
+        path = os.path.join(self.save_path, filename)
         torch.save(self.model.state_dict(), path)
         print(f"Model saved to {path}")
 
@@ -136,7 +180,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Train a joint network model")
-    parser.add_argument("--epoch", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("--epoch", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--checkpoint", type=str, default="", help="Path to model checkpoint to load")
     args = parser.parse_args()
 
@@ -145,7 +189,10 @@ if __name__ == "__main__":
     hidden_size = setting.HIDDEN_SIZE
     output_size = setting.WHOLE_JOINT_NUM   # 19個の関節それぞれに故障があるかどうかを判断
     num_layers = setting.NUM_LAYERS      # GRUの層数
-    chunk_size = 200
+    chunk_size = setting.CHUNK_SIZE     # 学習時のチャンクサイズ
+    max_grad_norm = setting.MAX_GRAD_NORM # 勾配クリッピングの最大ノルム
+    batch_size = setting.BATCH_SIZE
+
 
     datasets = data.JointDataset(
                 data_dir="processed_data",
@@ -154,14 +201,24 @@ if __name__ == "__main__":
                 )
     dataloader = torch.utils.data.DataLoader(
                         datasets,
-                        batch_size=1,
+                        batch_size=batch_size,
                         shuffle=True,
-                        # collate_fn=data.collate_episodes,
+                        collate_fn=data.collate_fn_pad_batch,
                         num_workers=6,
                         pin_memory=True  # CPU→GPU転送を高速化
                     )
 
     failure_joint_list = [0, 1, 3, 4, 7, 8, 11, 12]
+
+    param = {
+        "hidden_size" : hidden_size,
+        "num_layers" : num_layers,
+        "chunk_size" : chunk_size,
+        "failure_joint_list" : failure_joint_list,
+        "max_grad_norm": max_grad_norm,
+        "epochs" : args.epoch,
+        "batch_size": batch_size
+    }
 
     if args.checkpoint != "":
         print(f"Loading model from {args.checkpoint}")
@@ -169,24 +226,37 @@ if __name__ == "__main__":
         model.load_state_dict(torch.load(args.checkpoint))
     else:
         model = JointGRUNet(input_size, hidden_size, output_size, num_layers=num_layers).to("cuda")
-    trainer = Trainer(model, active_joint_indices=failure_joint_list)
+    current_datetime = time.strftime("%Y%m%d-%H%M%S")
+    log_dir = f"learning_log/{current_datetime}"
+    trainer = Trainer(model, active_joint_indices=failure_joint_list, max_grad_norm=max_grad_norm, logdir=log_dir)
     total_loss = 0.0
+    yaml.safe_dump(param, open(f"{log_dir}/training_setting.yaml", 'w'))
 
     print("Starting training... at ", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+    total_batches = 0
     for epoch in range(args.epoch):  # 10 epochs for demonstration
         start = time.time()
         total_loss = 0.0
         total_accuracy = 0.0
-        total_episodes = 1
-        for episode in dataloader:
-            loss, accuracy = trainer.train_episode(episode=episode, sequence_length=chunk_size)
+        num_batches = 0
+        for batch in dataloader:
+            num_batches += batch[0].shape[0]
+            loss, accuracy = trainer.train_batch_loop(batch_data=batch, chunk_size=chunk_size)
             total_loss += loss
             total_accuracy += accuracy
-            trainer.writer.add_scalar("info / loss", total_loss / total_episodes, total_episodes)
-            trainer.writer.add_scalar("info / accuracy", total_accuracy / total_episodes, total_episodes)
-            total_episodes += 1
+            
+            total_batches += 1
+            num_batches += 1
+            
+            current_mean_loss = total_loss / num_batches
+            current_mean_accuracy = total_accuracy / num_batches
+            trainer.writer.add_scalar("info / loss", current_mean_loss, total_batches)
+            trainer.writer.add_scalar("info / accuracy", current_mean_accuracy, total_batches)
+
         end = time.time()
         trainer.writer.add_scalar("epoch_time", end - start, epoch)
         print(f"Epoch {epoch + 1} completed in {end - start:.2f} seconds")
-        trainer.save_model(f"models/joint_net_epoch_{epoch + 1}.pth")
-    print(f"Training loss: {total_loss / total_episodes}")
+        epoch_loss = total_loss / num_batches
+        epoch_accuracy = total_accuracy / num_batches
+        print(f"--> Loss: {epoch_loss:.4f}\n",f"--> Accuracy: {epoch_accuracy:.4f}")
+        trainer.save_model(f"joint_net_epoch_{epoch + 1}.pth")
