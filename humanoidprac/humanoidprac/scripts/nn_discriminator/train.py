@@ -1,6 +1,6 @@
 import torch
-import data
-from data import get_sequence_from_episode, get_episode_length
+import nn_data
+from nn_data import get_sequence_from_episode, get_episode_length
 import time
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F

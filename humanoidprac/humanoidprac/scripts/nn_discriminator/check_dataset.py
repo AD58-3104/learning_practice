@@ -1,4 +1,4 @@
-import data
+import nn_data
 import torch
 import setting
 import math
@@ -10,7 +10,7 @@ def check_length(datasets):
     length_map = {}
     total_length = 0
     for episode in datasets:
-        ep_len = data.get_episode_length(episode)
+        ep_len = nn_data.get_episode_length(episode)
         total_length += ep_len
         ep_len = round_len(ep_len, base=50)
         if ep_len not in length_map:
@@ -39,7 +39,7 @@ def check_std(datasets):
         obs = episode["data"]
         mu += obs.sum(dim=0)
         sigma += (obs ** 2).sum(dim=0)
-        total_length += data.get_episode_length(episode)
+        total_length += nn_data.get_episode_length(episode)
     
     data_std = torch.sqrt(sigma / total_length - (mu / total_length) ** 2)
     torch.set_printoptions(sci_mode=False)
@@ -63,16 +63,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir", type=str, default="processed_data", help="Directory containing processed data")
     args = parser.parse_args()
-    datasets = data.JointDataset(
+    datasets = nn_data.JointDataset(
                 data_dir=args.dir,
                 sequence_length=setting.SEQUENCE_LENGTH,
                 cache_in_memory=True
                 )
-    dataloader = torch.utils.data.DataLoader(
+    dataloader = torch.utils.nn_data.DataLoader(
                         datasets,
                         batch_size=1,
                         shuffle=True,
-                        # collate_fn=data.collate_episodes,
+                        # collate_fn=nn_data.collate_episodes,
                         num_workers=6,
                         pin_memory=True  # CPU→GPU転送を高速化
                     )

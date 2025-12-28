@@ -1,4 +1,4 @@
-import data
+import nn_data
 import setting
 
 # Create dataset

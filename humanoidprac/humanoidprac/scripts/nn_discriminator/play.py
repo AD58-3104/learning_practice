@@ -1,6 +1,6 @@
 import torch
-import data
-from data import get_sequence_from_episode, get_episode_length
+import nn_data
+from nn_data import get_sequence_from_episode, get_episode_length
 import time
 import argparse
 import tqdm
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     hidden_size = setting.HIDDEN_SIZE
     output_size = setting.WHOLE_JOINT_NUM   # 19個の関節それぞれに故障があるかどうかを判断
     num_layers = setting.NUM_LAYERS      # GRUの層数
-    chunk_size = setting.CHUNK_SIZE     # 学習時のチャンクサイズ
+    chunk_size = 1
     max_grad_norm = setting.MAX_GRAD_NORM # 勾配クリッピングの最大ノルム
     batch_size = setting.BATCH_SIZE
 
@@ -43,16 +43,16 @@ if __name__ == "__main__":
     model.eval()
 
     batch_size = 1
-    datasets = data.JointDataset(
+    datasets = nn_data.JointDataset(
                         data_dir="test_data/processed_data",
                         sequence_length=sequence_length,
                         cache_in_memory=True
                         )
-    dataloader = torch.utils.data.DataLoader(
+    dataloader = torch.utils.nn_data.DataLoader(
                             datasets, 
                             batch_size=batch_size,
                             shuffle=False,
-                            # collate_fn=data.collate_fn_pad_batch,
+                            # collate_fn=nn_data.collate_fn_pad_batch,
                             num_workers=4
                         )
     total_samples = 0

@@ -141,7 +141,10 @@ class DataPreprocessor:
 
     def process_tensor(self, tensor):
         shape = tensor.shape
+        print(shape)
         flat_tensor = tensor.view(-1, shape[-1])
+        print(flat_tensor.shape)
+        raise NotImplementedError("まだ実装されていません。")
         scaled_flat = self.scaler.transform(flat_tensor.cpu().numpy())
         scaled_tensor = torch.from_numpy(scaled_flat).view(shape).to(tensor.device)
         return scaled_tensor
