@@ -303,15 +303,24 @@ class change_random_joint_torque(ManagerTermBase):
         else:
             env_ids = env_ids.cuda()
 
-        # リセットする
-        self.asset.write_joint_effort_limit_to_sim(self.torque_300_torch,(self.right_legs.joint_ids + self.left_legs.joint_ids), env_ids)
+        # # リセットする
+        # self.asset.write_joint_effort_limit_to_sim(self.torque_300_torch,(self.right_legs.joint_ids + self.left_legs.joint_ids), env_ids)
 
         import random
+
+        robot = env.unwrapped.scene["robot"]
+        joint_effort_limits = robot.data.joint_effort_limits
+        reseted_limits = joint_effort_limits < (joint_torque + 1)
+        reseted_limits = reseted_limits.sum(dim=1) > 0  # 環境ごとに一つでも制限が変わっていたらTrue
+        not_reseted_limits_env_indices = torch.nonzero(~reseted_limits, as_tuple=False).squeeze(-1)
+        # print(f"not reseted limits env ids: {not_reseted_limits_indices.tolist()}")
+        
+
 
         # 環境が1以上あり複数のクラスに分離される場合
         if env.num_envs > 1:
             # 環境IDを分類
-            env_ids_right, env_ids_left = self.classifier.classify_by_envid(env_ids)
+            env_ids_right, env_ids_left = self.classifier.classify_by_envid(not_reseted_limits_env_indices)
 
             # 右側をランダム選出
             target_joint_right = [joint_id for joint_id in target_joint_cfg.joint_ids if joint_id in self.right_legs.joint_ids]

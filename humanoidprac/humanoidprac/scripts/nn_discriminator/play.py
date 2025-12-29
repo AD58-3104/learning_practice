@@ -48,7 +48,7 @@ if __name__ == "__main__":
                         sequence_length=sequence_length,
                         cache_in_memory=True
                         )
-    dataloader = torch.utils.nn_data.DataLoader(
+    dataloader = torch.utils.data.DataLoader(
                             datasets, 
                             batch_size=batch_size,
                             shuffle=False,

@@ -217,7 +217,7 @@ class H1FlatEnvCfgCorrectLearningData(H1FlatEnvCfg):
                                     "left_hip_pitch",
                                     "right_knee",
                                     "left_knee",]),
-                "joint_torque": [50.0],
+                "joint_torque": 50.0,
                 "logging": False
             },
         )
@@ -238,7 +238,7 @@ class H1FlatEnvCfgRandomJointDebuff(H1FlatEnvCfg):
         self.events.change_random_joint_torque = EventTerm(
             func=mdp.change_random_joint_torque,
             mode="interval",
-            interval_range_s=(5.0, 10.0),
+            interval_range_s=(3.0, 8.0),
             params={
                 "target_joint_cfg": SceneEntityCfg(
                                 name="robot",
@@ -251,7 +251,7 @@ class H1FlatEnvCfgRandomJointDebuff(H1FlatEnvCfg):
                                     "left_hip_pitch",
                                     "right_knee",
                                     "left_knee",]),
-                "joint_torque": [50.0],
+                "joint_torque": 50.0,
             },
         )
         self.events.change_joint_torque = None # disable the original one
@@ -272,7 +272,7 @@ class H1FlatEnvCfgRandomJointDebuff_PLAY(H1FlatEnvCfg_PLAY):
         self.events.change_random_joint_torque = EventTerm(
             func=mdp.change_random_joint_torque,
             mode="interval",
-            interval_range_s=(5.0, 10.0),
+            interval_range_s=(3.0, 8.0),
             params={
                 "target_joint_cfg": SceneEntityCfg(
                                         name="robot",
@@ -285,8 +285,8 @@ class H1FlatEnvCfgRandomJointDebuff_PLAY(H1FlatEnvCfg_PLAY):
                                             "left_hip_pitch",
                                             "right_knee",
                                             "left_knee",]),
-                "joint_torque": [50.0],
-                "normal_size": 1,  # 正常な状態も含める
+                "joint_torque": 50.0,
+                # "normal_size": 1,  # 正常な状態も含める
             },
         )
         self.events.change_joint_torque = None # disable the original one
@@ -334,7 +334,7 @@ class H1FlatEnvCfgDiscriminator(H1FlatEnvCfg):
             interval_range_s=(5.0, 24.0),
             params={
                 "target_joint_cfg": SceneEntityCfg(name="robot",joint_names=["right_knee","left_knee"]),
-                "joint_torque": [50.0],
+                "joint_torque": 50.0,
                 "normal_size": 2,  # 正常な状態を2つ含めて学習
             },
         )
