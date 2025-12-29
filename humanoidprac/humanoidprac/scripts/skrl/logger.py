@@ -328,7 +328,7 @@ class JointTorqueLogger:
 
     def log(self, env, terminated: torch.tensor, truncated: torch.Tensor):
         term_or_trunc = terminated | truncated
-        robot = env.scene["robot"]
+        robot = env.unwrapped.scene["robot"]
         joint_effort_limits = robot.data.joint_effort_limits  # (num_envs, joint_num)
         joint_effort_limits_bool = (joint_effort_limits < (self.target_torque + 1.0)).long()
         for env_idx in range(self.num_envs):
@@ -376,7 +376,7 @@ class JointTorqueLoggerOptimized:
         term_or_trunc = (terminated | truncated).float().unsqueeze(1) 
         
         # 2. Joint Limits Boolean (num_envs, joint_num)
-        robot = env.scene["robot"]
+        robot = env.unwrapped.scene["robot"]
         joint_effort_limits = robot.data.joint_effort_limits
         
         # 比較演算もGPU上で一括処理
@@ -422,13 +422,37 @@ class DiscriminatorTester:
         self.detect_count = torch.zeros((num_envs, joint_num), device="cuda")
 
     def log(self, env: ManagerBasedRLEnv, discriminator_outputs: torch.Tensor):
-        robot = env.scene["robot"]
+        robot = env.unwrapped.scene["robot"]
         joint_effort_limits = robot.data.joint_effort_limits  # (num_envs, joint_num)
         joint_effort_limits_bool = (joint_effort_limits < (self.target_torque + 1.0))
         # リミット掛かってる環境の総数を記録する
         self.total_count += joint_effort_limits_bool.long()
         self.success_count += (joint_effort_limits_bool & discriminator_outputs.bool()).long()
         self.detect_count += discriminator_outputs.long()
+
+    def get_data(self):
+        right_data = {}
+        left_data = {}
+        right_idx = [1, 4, 8, 12]
+        left_idx = [0, 3, 7, 11]
+        for joint_idx in right_idx:
+            total_tested = int(torch.sum(self.total_count[:, joint_idx]).item())
+            total_success = int(torch.sum(self.success_count[:, joint_idx]).item())
+            if total_tested > 0:
+                success_rate = (float(total_success) / float(total_tested)) * 100.0
+            else:
+                success_rate = 0.0
+            right_data[f"joint {joint_idx} accuracy [%]"] =  success_rate
+        for joint_idx in left_idx:
+            total_tested = int(torch.sum(self.total_count[:, joint_idx]).item())
+            total_success = int(torch.sum(self.success_count[:, joint_idx]).item())
+            if total_tested > 0:
+                success_rate = (float(total_success) / float(total_tested)) * 100.0
+            else:
+                success_rate = 0.0
+            left_data[f"joint {joint_idx} accuracy [%]"] = success_rate
+        return [right_data, left_data]
+
 
     def write_result(self):
         log_dir = "./play_logs"

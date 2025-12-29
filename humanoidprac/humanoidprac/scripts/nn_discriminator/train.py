@@ -194,7 +194,7 @@ if __name__ == "__main__":
     batch_size = setting.BATCH_SIZE
 
 
-    datasets = data.JointDataset(
+    datasets = nn_data.JointDataset(
                 data_dir="processed_data",
                 sequence_length=sequence_length,
                 cache_in_memory=True
@@ -203,7 +203,7 @@ if __name__ == "__main__":
                         datasets,
                         batch_size=batch_size,
                         shuffle=True,
-                        collate_fn=data.collate_fn_pad_batch,
+                        collate_fn=nn_data.collate_fn_pad_batch,
                         num_workers=6,
                         pin_memory=True  # CPU→GPU転送を高速化
                     )
