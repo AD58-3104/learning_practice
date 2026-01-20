@@ -7,3 +7,4 @@ NUM_LAYERS = 2       # GRUの層数
 CHUNK_SIZE = 200     # 学習時のチャンクサイズ
 MAX_GRAD_NORM = 1.0  # 勾配クリッピングの最大ノルム
 BATCH_SIZE = 1024   # バッチサイズ
+LEARNING_RATE = 0.001  # 学習率

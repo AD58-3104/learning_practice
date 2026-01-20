@@ -13,7 +13,7 @@ import typing
 from sklearn.preprocessing import StandardScaler
 from torch.nn.utils.rnn import pad_sequence
 
-min_save_episode_length = 90 # これより短いエピソードは保存しない
+min_save_episode_length = 75 # これより短いエピソードは保存しない
 
 def _load_file_pair(args):
     """並列読み込み用のヘルパー関数"""
@@ -426,9 +426,13 @@ def process_single_file(args):
     return i
 
 if __name__ == "__main__":
-    num_target_files = int(file_counts_in_directory("nn_data") / 2)
-    output_dir = "processed_data"
+    import argparse
+    parser = argparse.ArgumentParser(description="Process and split NN discriminator data files.")
+    parser.add_argument('--output-dir', type=str, default='processed_data', help='Directory containing the raw data files.')
+    args = parser.parse_args()
 
+    num_target_files = int(file_counts_in_directory("nn_data") / 2)
+    output_dir = args.output_dir
     # 並列処理の実行
     num_workers = min(cpu_count(), num_target_files)
     print(f"Processing {num_target_files} files using {num_workers} workers...")
@@ -449,5 +453,5 @@ if __name__ == "__main__":
 
     print("All files processed successfully!")
 
-    dataset = JointDataset(data_dir="processed_data")
+    dataset = JointDataset(data_dir=output_dir)
     print(f"Dataset length: {len(dataset)}")

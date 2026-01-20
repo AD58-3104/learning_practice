@@ -9,8 +9,7 @@ class JointNet(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Linear(hidden_size, output_size),
-            nn.Sigmoid()
+            nn.Linear(hidden_size, output_size)
         )
 
     def forward(self, x):
@@ -22,16 +21,22 @@ class JointGRUNet(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, dropout_p=0.5):
         super(JointGRUNet, self).__init__()
         gru_dropout = dropout_p if num_layers > 1 else 0.0
-        self.gru = nn.GRU( 
-                        input_size, 
-                        hidden_size, 
-                        num_layers, 
-                        batch_first=True, 
+        self.input_encoder = nn.Sequential(
+            nn.Linear(input_size,64),
+            nn.ReLU(),
+            nn.Linear(64,64),
+            nn.ReLU(),
+            nn.Linear(64,input_size // 2),
+        )
+        self.gru = nn.GRU(
+                        input_size // 2,
+                        hidden_size,
+                        num_layers,
+                        batch_first=True,
                         dropout=gru_dropout  # これは中間層がある場合のみ適用
                     )
         self.fc = nn.Sequential(
-            nn.Linear(hidden_size, output_size),
-            nn.Sigmoid()
+            nn.Linear(hidden_size, output_size)
         )
 
         self.dropout = nn.Dropout(p=0.5)
@@ -44,6 +49,7 @@ class JointGRUNet(nn.Module):
             x = x.unsqueeze(1)
 
         # x: (batch, sequence, input_size) when batch_first=True
+        x = self.input_encoder(x)
         out, next_hidden = self.gru(x, hidden)
         # 全結合層に入れる前にドロップアウトを適用
         out = self.dropout(out)

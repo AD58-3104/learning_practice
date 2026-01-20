@@ -9,11 +9,11 @@ import yaml
 import os
 
 class Trainer:
-    def __init__(self, model, active_joint_indices=None, max_grad_norm=1.0, logdir = "learning_log/" + time.strftime("%Y%m%d-%H%M%S")):
+    def __init__(self, model, active_joint_indices=None, max_grad_norm=1.0,learning_rate=0.001, logdir = "learning_log/" + time.strftime("%Y%m%d-%H%M%S")):
         self.model = model
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
         # 【重要】マスク処理をするため、ここでは平均(mean)を取らず、個別の損失を返すように設定
-        self.error_function = torch.nn.BCELoss(reduction='none')        
+        self.error_function = torch.nn.BCEWithLogitsLoss(reduction='none')        
         self.step = 0
         self.running_loss = 0.0
         self.writer = SummaryWriter(log_dir=logdir)
@@ -49,7 +49,9 @@ class Trainer:
         self.optimizer.step()
         self.step += 1
         self.running_loss += loss.item()
-        outputs_bin = (outputs > 0.5).float()
+        # BCEWithLogitsLossを使用しているため、sigmoidを適用してから閾値判定
+        outputs_prob = torch.sigmoid(outputs)
+        outputs_bin = (outputs_prob > 0.5).float()
         correct = (outputs_bin == targets).float() * final_mask
         accuracy = correct.sum() / (final_mask.sum() + 1e-8)
         print_step = 200
@@ -182,6 +184,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a joint network model")
     parser.add_argument("--epoch", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--checkpoint", type=str, default="", help="Path to model checkpoint to load")
+    parser.add_argument("--nocache", type=bool, default=False, help="Enable or disable caching dataset in memory")
+    parser.add_argument("--dir", type=str, default="processed_data", help="Directory containing processed data")
     args = parser.parse_args()
 
     sequence_length = setting.SEQUENCE_LENGTH
@@ -195,9 +199,9 @@ if __name__ == "__main__":
 
 
     datasets = nn_data.JointDataset(
-                data_dir="processed_data",
+                data_dir=args.dir,
                 sequence_length=sequence_length,
-                cache_in_memory=True
+                cache_in_memory=not args.nocache
                 )
     dataloader = torch.utils.data.DataLoader(
                         datasets,
@@ -217,7 +221,8 @@ if __name__ == "__main__":
         "failure_joint_list" : failure_joint_list,
         "max_grad_norm": max_grad_norm,
         "epochs" : args.epoch,
-        "batch_size": batch_size
+        "batch_size": batch_size,
+        "learning_rate": setting.LEARNING_RATE
     }
 
     if args.checkpoint != "":
@@ -228,7 +233,7 @@ if __name__ == "__main__":
         model = JointGRUNet(input_size, hidden_size, output_size, num_layers=num_layers).to("cuda")
     current_datetime = time.strftime("%Y%m%d-%H%M%S")
     log_dir = f"learning_log/{current_datetime}"
-    trainer = Trainer(model, active_joint_indices=failure_joint_list, max_grad_norm=max_grad_norm, logdir=log_dir)
+    trainer = Trainer(model, active_joint_indices=failure_joint_list, max_grad_norm=max_grad_norm,learning_rate=setting.LEARNING_RATE, logdir=log_dir)
     total_loss = 0.0
     yaml.safe_dump(param, open(f"{log_dir}/training_setting.yaml", 'w'))
 
