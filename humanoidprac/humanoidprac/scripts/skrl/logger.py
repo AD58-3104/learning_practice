@@ -421,6 +421,21 @@ class DiscriminatorTester:
         self.success_count = torch.zeros((num_envs, joint_num), device="cuda")
         self.detect_count = torch.zeros((num_envs, joint_num), device="cuda")
 
+        # 8x8混同行列用（8クラス分）
+        # joint_idx_list = [1, 4, 8, 12, 0, 3, 7, 11]の順番
+        self.confusion_matrix_8x8 = torch.zeros((8, 8), device="cuda", dtype=torch.long)
+
+        # 各関節の2x2混同行列用（TP, FP, TN, FN）
+        # confusion_matrix_2x2[class_idx, 0, 0] = TP
+        # confusion_matrix_2x2[class_idx, 0, 1] = FN
+        # confusion_matrix_2x2[class_idx, 1, 0] = FP
+        # confusion_matrix_2x2[class_idx, 1, 1] = TN
+        self.confusion_matrix_2x2 = torch.zeros((8, 2, 2), device="cuda", dtype=torch.long)
+
+        # 関節IDとクラスインデックスのマッピング
+        self.joint_idx_list = [1, 4, 8, 12, 0, 3, 7, 11]
+        self.joint_to_class = {joint_id: class_idx for class_idx, joint_id in enumerate(self.joint_idx_list)}
+
     def log(self, env: ManagerBasedRLEnv, discriminator_outputs: torch.Tensor):
         robot = env.unwrapped.scene["robot"]
         joint_effort_limits = robot.data.joint_effort_limits  # (num_envs, joint_num)
@@ -430,33 +445,117 @@ class DiscriminatorTester:
         self.success_count += (joint_effort_limits_bool & discriminator_outputs.bool()).long()
         self.detect_count += discriminator_outputs.long()
 
+        # 8x8混同行列と2x2混同行列の更新
+        self._update_confusion_matrices(joint_effort_limits_bool, discriminator_outputs)
+
+    def _update_confusion_matrices(self, actual_failures: torch.Tensor, predicted_failures: torch.Tensor):
+        """
+        混同行列を更新する（テンソル演算版）
+        actual_failures: (num_envs, joint_num) - 実際に故障している関節
+        predicted_failures: (num_envs, joint_num) - 検出された関節
+        """
+        # joint_idx_listに対応する関節のみを抽出
+        # joint_indices: (8,) のテンソル
+        device = actual_failures.device
+        joint_indices = torch.tensor(self.joint_idx_list, device=device, dtype=torch.long)
+
+        # (num_envs, 8) の形状に変換
+        actual = actual_failures[:, joint_indices]
+        predicted = predicted_failures[:, joint_indices]
+
+        # 2x2混同行列の更新（ベクトル化）
+        # TP: actual=True, predicted=True
+        tp = (actual & predicted).long().sum(dim=0)  # (8,) - 各クラスのTP数
+        # FN: actual=True, predicted=False
+        fn = (actual & ~predicted).long().sum(dim=0)  # (8,) - 各クラスのFN数
+        # FP: actual=False, predicted=True
+        fp = (~actual & predicted).long().sum(dim=0)  # (8,) - 各クラスのFP数
+        # TN: actual=False, predicted=False
+        tn = (~actual & ~predicted).long().sum(dim=0)  # (8,) - 各クラスのTN数
+
+        # 一括更新
+        self.confusion_matrix_2x2[:, 0, 0] += tp
+        self.confusion_matrix_2x2[:, 0, 1] += fn
+        self.confusion_matrix_2x2[:, 1, 0] += fp
+        self.confusion_matrix_2x2[:, 1, 1] += tn
+
+        # 8x8混同行列の更新（外積を使った一括計算）
+        # actual: (num_envs, 8), predicted: (num_envs, 8)
+        # 各環境で actual と predicted の外積を計算し、全環境分を合計
+        # (num_envs, 8, 1) @ (num_envs, 1, 8) -> (num_envs, 8, 8)
+        outer_product = actual.unsqueeze(2).float() @ predicted.unsqueeze(1).float()
+
+        # 全環境分を合計して8x8行列に加算
+        self.confusion_matrix_8x8 += outer_product.sum(dim=0).long()
+
+    def _calculate_metrics(self, class_idx: int):
+        """
+        指定されたクラスのメトリクスを計算する
+        返り値: (tp, fp, tn, fn, accuracy, precision, recall, f1_score)
+        """
+        tp = int(self.confusion_matrix_2x2[class_idx, 0, 0].item())
+        fn = int(self.confusion_matrix_2x2[class_idx, 0, 1].item())
+        fp = int(self.confusion_matrix_2x2[class_idx, 1, 0].item())
+        tn = int(self.confusion_matrix_2x2[class_idx, 1, 1].item())
+
+        total = tp + tn + fp + fn
+        if total == 0:
+            return tp, fp, tn, fn, 0.0, 0.0, 0.0, 0.0
+
+        # Accuracy
+        accuracy = (tp + tn) / total
+
+        # Precision
+        if (tp + fp) > 0:
+            precision = tp / (tp + fp)
+        else:
+            precision = 0.0
+
+        # Recall
+        if (tp + fn) > 0:
+            recall = tp / (tp + fn)
+        else:
+            recall = 0.0
+
+        # F1 Score
+        if (precision + recall) > 0:
+            f1_score = 2 * (precision * recall) / (precision + recall)
+        else:
+            f1_score = 0.0
+
+        return tp, fp, tn, fn, accuracy, precision, recall, f1_score
+
     def get_data(self):
-        right_data = {}
-        left_data = {}
-        right_idx = [1, 4, 8, 12]
-        left_idx = [0, 3, 7, 11]
-        for joint_idx in right_idx:
+        # 8つのクラスに対応するデータを返す
+        # クラス0-3: 右脚の各関節（joint 1, 4, 8, 12）
+        # クラス4-7: 左脚の各関節（joint 0, 3, 7, 11）
+        joint_idx_list = [1, 4, 8, 12, 0, 3, 7, 11]
+        result = []
+
+        for joint_idx in joint_idx_list:
+            data = {}
             total_tested = int(torch.sum(self.total_count[:, joint_idx]).item())
             total_success = int(torch.sum(self.success_count[:, joint_idx]).item())
             if total_tested > 0:
                 success_rate = (float(total_success) / float(total_tested)) * 100.0
             else:
                 success_rate = 0.0
-            right_data[f"joint {joint_idx} accuracy [%]"] =  success_rate
-        for joint_idx in left_idx:
-            total_tested = int(torch.sum(self.total_count[:, joint_idx]).item())
-            total_success = int(torch.sum(self.success_count[:, joint_idx]).item())
-            if total_tested > 0:
-                success_rate = (float(total_success) / float(total_tested)) * 100.0
-            else:
-                success_rate = 0.0
-            left_data[f"joint {joint_idx} accuracy [%]"] = success_rate
-        return [right_data, left_data]
+            data[f"joint {joint_idx} accuracy [%]"] = success_rate
+            result.append(data)
+
+        return result
 
 
     def write_result(self):
         log_dir = "./play_logs"
         import os
+        import csv
+        from datetime import datetime
+
+        # タイムスタンプを取得
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # 既存のログファイルを出力
         with open(os.path.join(log_dir, "discriminator_test_result.log"), 'w') as f:
             f.write("Joint Index, Total limited num, Total Success detected, Success Rate [%]\n")
             # >>> Right_legs joint_ids: [1, 4, 8, 12]
@@ -475,3 +574,43 @@ class DiscriminatorTester:
                 f.write(f"Joint {joint_idx} Total detected: {total_detected}\n")
                 print(f"[Discriminator Tester] Joint {joint_idx}: Total detected {total_detected}")
         print("[Discriminator Tester] Result written to discriminator_test_result.log")
+
+        # 個別混同行列用CSVを出力
+        csv_filename = os.path.join(log_dir, f"confusion_matrix_{timestamp}.csv")
+        with open(csv_filename, 'w', newline='') as csvfile:
+            fieldnames = ['Joint_ID', 'TP', 'FP', 'TN', 'FN', 'Accuracy', 'Precision', 'Recall', 'F1_Score']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for class_idx, joint_id in enumerate(self.joint_idx_list):
+                tp, fp, tn, fn, accuracy, precision, recall, f1_score = self._calculate_metrics(class_idx)
+                writer.writerow({
+                    'Joint_ID': joint_id,
+                    'TP': tp,
+                    'FP': fp,
+                    'TN': tn,
+                    'FN': fn,
+                    'Accuracy': accuracy,
+                    'Precision': precision,
+                    'Recall': recall,
+                    'F1_Score': f1_score
+                })
+                print(f"[Discriminator Tester] Joint {joint_id}: Accuracy={accuracy:.3f}, Precision={precision:.3f}, Recall={recall:.3f}, F1={f1_score:.3f}")
+
+        print(f"[Discriminator Tester] Confusion matrix CSV written to {csv_filename}")
+
+        # 8x8混同行列用CSVを出力
+        csv_8x8_filename = os.path.join(log_dir, f"confusion_matrix_8x8_{timestamp}.csv")
+        with open(csv_8x8_filename, 'w', newline='') as csvfile:
+            # ヘッダー行を作成
+            header = [''] + [f'Joint_{joint_id}' for joint_id in self.joint_idx_list]
+            writer = csv.writer(csvfile)
+            writer.writerow(header)
+
+            # 各行を書き込み
+            confusion_matrix_cpu = self.confusion_matrix_8x8.cpu().numpy()
+            for row_idx, joint_id in enumerate(self.joint_idx_list):
+                row = [f'Joint_{joint_id}'] + confusion_matrix_cpu[row_idx].tolist()
+                writer.writerow(row)
+
+        print(f"[Discriminator Tester] 8x8 Confusion matrix CSV written to {csv_8x8_filename}")

@@ -83,12 +83,25 @@ def EnvIdClassifier(num_of_envs: int):
         def __init__(self, num_of_envs: int):
             self.num_of_envs = num_of_envs
             # 上界を表すリスト(最後は省略されている)
-            self.bound_list = torch.tensor([int(num_of_envs / 2)], device="cuda")
-            self.num_of_classes = len(self.bound_list) + 1
             self.class_joint_id_list = [
-                [1, 4, 8, 12],  # class 0 右
-                [0, 3, 7, 11],  # class 1 左
+                [1],  # class 0 右
+                [4],
+                [8],
+                [12],
+                [0], 
+                [3],
+                [7],
+                [11],  # class 1 左
             ]
+            self.num_of_classes = len(self.class_joint_id_list)
+            bound_list = []
+            for i in range(len(self.class_joint_id_list)-1):
+                # joint_idの次の環境IDを境界とする
+                bound_list.append((self.num_of_envs // self.num_of_classes) * (i + 1))
+            self.bound_list = torch.tensor(bound_list, device="cuda")
+            print(f"EnvIdClassifier: boundaries: {self.bound_list.tolist()}")
+            assert len(self.bound_list) + 1 == self.num_of_classes, "EnvIdClassifier: クラス数と境界数が合わない"
+
 
         def get_class_env_bounds(self, class_id: int) -> tuple[int, int]:
             """
@@ -250,12 +263,25 @@ class change_random_joint_torque(ManagerTermBase):
             "right_hip_pitch",
             "right_knee",
         ]
+        self.joint_torque_right = {
+            1: 2.0,
+            4: 10.0,
+            8: 20.0,
+            12: 50.0,
+        }
+
         self.joint_list_left = [
             "left_hip_yaw",
             "left_hip_roll",
             "left_hip_pitch",
             "left_knee",
         ]
+        self.joint_torque_left = {
+            0: 2.0,
+            3: 10.0,
+            7: 20.0,
+            11: 50.0,
+        }
 
         self.right_legs = SceneEntityCfg()
         self.right_legs.name = "robot"
@@ -288,7 +314,7 @@ class change_random_joint_torque(ManagerTermBase):
         self,
         env: ManagerBasedEnv,
         env_ids: torch.Tensor | None,
-        joint_torque: float,
+        joint_torque: float,    # これは単一環境でのみ利用される
         target_joint_cfg: SceneEntityCfg,
         normal_size: int = 0,
         logging: bool = False
@@ -319,15 +345,22 @@ class change_random_joint_torque(ManagerTermBase):
 
         # 環境が1以上あり複数のクラスに分離される場合
         if env.num_envs > 1:
-            # 環境IDを分類
-            env_ids_right, env_ids_left = self.classifier.classify_by_envid(not_reseted_limits_env_indices)
+            # 環境IDを8つのクラスに分類
+            classified_env_ids = self.classifier.classify_by_envid(not_reseted_limits_env_indices)
+            # クラス0-3: 右脚（joint 1, 4, 8, 12）
+            # クラス4-7: 左脚（joint 0, 3, 7, 11）
+            # 右脚と左脚のグループに統合
+            right_tensors = [classified_env_ids[i] for i in range(4) if len(classified_env_ids[i]) > 0]
+            left_tensors = [classified_env_ids[i] for i in range(4, 8) if len(classified_env_ids[i]) > 0]
+            env_ids_right = torch.cat(right_tensors) if len(right_tensors) > 0 else torch.tensor([], dtype=torch.long, device="cuda")
+            env_ids_left = torch.cat(left_tensors) if len(left_tensors) > 0 else torch.tensor([], dtype=torch.long, device="cuda")
 
             # 右側をランダム選出
             target_joint_right = [joint_id for joint_id in target_joint_cfg.joint_ids if joint_id in self.right_legs.joint_ids]
             random_joint_right = random.choice(target_joint_right + [999 for _ in range(normal_size)])
             # 999が選ばれたら制限はしない
             if random_joint_right != 999:
-                joint_torque_torch = torch.tensor(joint_torque,device="cuda")
+                joint_torque_torch = torch.tensor(self.joint_torque_right[random_joint_right],device="cuda")
                 if len(env_ids_right) > 0:
                     self.asset.write_joint_effort_limit_to_sim(joint_torque_torch, [random_joint_right], env_ids_right)
                     # print(f"change_random_joint_torque: right joint {random_joint_right} torque changed to {joint_torque} for envs {env_ids_right.tolist()}")
@@ -337,16 +370,20 @@ class change_random_joint_torque(ManagerTermBase):
             random_joint_left = random.choice(target_joint_left + [999 for _ in range(normal_size)])
             # 999が選ばれたら制限はしない
             if random_joint_left != 999:
-                joint_torque_torch = torch.tensor(joint_torque,device="cuda")
+                joint_torque_torch = torch.tensor(self.joint_torque_left[random_joint_left],device="cuda")
                 if len(env_ids_left) > 0:
                     self.asset.write_joint_effort_limit_to_sim(joint_torque_torch, [random_joint_left], env_ids_left)
-                    # print(f"change_random_joint_torque: left joint {random_joint_left} torque changed to {joint_torque} for envs {env_ids_left.tolist()}")
+                    # print(f"change_random_joint_torque: left joint {random_joint_right} torque changed to {joint_torque} for envs {env_ids_left.tolist()}")
         else:
             # 単一環境の場合
             target_joint_ids = target_joint_cfg.joint_ids
             single_random_joint = random.choice(target_joint_ids + [999 for _ in range(normal_size)])
             # 999が選ばれたら制限はしない
             if single_random_joint != 999:
+                if single_random_joint in self.joint_torque_right:
+                    joint_torque = self.joint_torque_right[single_random_joint]
+                elif single_random_joint in self.joint_torque_left:
+                    joint_torque = self.joint_torque_left[single_random_joint]
                 joint_torque_torch = torch.tensor(joint_torque,device="cuda")
                 self.asset.write_joint_effort_limit_to_sim(joint_torque_torch, [single_random_joint], env_ids)
 

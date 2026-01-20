@@ -117,8 +117,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.joint_cfg:
         param = ast.literal_eval(args_cli.joint_cfg)
         print(f"[INFO] Overriding joint configuration : {env_cfg.scene.robot.actuators['legs'].effort_limit}")
+        print(f"[INFO] Overriding joint configuration : {env_cfg.scene.robot.actuators['feet'].effort_limit}")
         for joint_name, torque in param.items():
-            env_cfg.scene.robot.actuators["legs"].effort_limit[joint_name] = torque
+            if "ankle" in joint_name:
+                env_cfg.scene.robot.actuators["feet"].effort_limit[joint_name] = torque
+            else: 
+                env_cfg.scene.robot.actuators["legs"].effort_limit[joint_name] = torque
             print(f"[INFO] Overriding joint configuration with: {joint_name} -> {torque}Nm")
 
     # configure the ML framework into the global skrl variable
@@ -196,7 +200,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         finish_step = args_cli.finish_step
     # デフォルト値は上のadd_argumentで3000にしている.
     exp_val_logger = logger.ExperimentValueLogger(finish_step=finish_step, log_file_name=os.path.join(log_dir, "play_log.csv"), target_envs=target_envs)
-    nn_disc_logger = logger.DiscriminatorObsDataLogger(env=env)
+    # nn_disc_logger = logger.DiscriminatorObsDataLogger(env=env)
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -214,12 +218,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # env stepping
             obs, _, terminated, truncated, _ = env.step(actions)
             obs_dict = env.obs_buf
-            nn_disc_logger.log(
-                    step=env.common_step_counter,
-                    observations=obs_dict['state'],
-                    terminated=terminated,
-                    truncated=truncated
-                )
+            # nn_disc_logger.log(
+            #         step=env.common_step_counter,
+            #         observations=obs_dict['state'],
+            #         terminated=terminated,
+            #         truncated=truncated
+            #     )
             if exp_val_logger.log(env):
                 print("終了ステップに到達しました。")
                 break

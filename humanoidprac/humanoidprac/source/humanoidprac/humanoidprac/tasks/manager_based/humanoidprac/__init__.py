@@ -43,6 +43,17 @@ gym.register(
     },
 )
 
+# nn_discriminator用のデータ取得環境（これは健常な状態で学習したものを動かしてデータを取る必要がある）
+gym.register(
+    id="Humanoidprac-nn-disc-data-correction",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.actual_env_config:H1FlatEnvCfgCorrectLearningData",
+        "skrl_cfg_entry_point": f"{agents.__name__}:learned_agent_cfg.yaml",
+    },
+)
+
 # 並列で故障モデルをトレーニングするタスク
 gym.register(
     id="Parallel-failure-train-v0",
@@ -103,16 +114,5 @@ gym.register(
     kwargs={
         "env_cfg_entry_point": f"{__name__}.actual_env_config:H1FlatEnvCfg_PLAY",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg_discriminator.yaml",
-    },
-)
-
-# nn_discriminator用のデータ取得環境（これは健常な状態で学習したものを動かしてデータを取る必要がある）
-gym.register(
-    id="Humanoidprac-nn-disc-data-correction",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.actual_env_config:H1FlatEnvCfgCorrectLearningData",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
     },
 )

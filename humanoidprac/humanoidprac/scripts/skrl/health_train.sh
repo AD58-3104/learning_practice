@@ -1,0 +1,1 @@
+labpython train.py --task Humanoidprac-v0-train --num_envs 8192 --headless agent.agent.experiment.directory="h1_flat/joint_experiment_ver3" env.events.change_joint_torque=null agent.trainer.timesteps=64000

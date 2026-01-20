@@ -175,6 +175,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # get checkpoint path (to resume training)
     # resume_path = retrieve_file_path(args_cli.checkpoint) if args_cli.checkpoint else None
+    if args_cli.checkpoint is not None:
+        from custom_parallel_trainer import AgentModelLoader 
+        checkpoint_pathes = AgentModelLoader.get_model_pathes(args_cli.checkpoint)
+    else:
+        checkpoint_pathes = None
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -211,9 +216,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"[DEBUG] env.observation_space: {env.observation_space}")
     print(f"[DEBUG] env.single_observation_space: {env.single_observation_space}")
 
-    health_agent_model = "normal_agent.pt"
+    health_agent_model_path = "normal_agent.pt"
     tmp_rn = Runner(env, agent_cfg)
-    tmp_rn.agent.load(health_agent_model)
+    tmp_rn.agent.load(health_agent_model_path)
     # 健康状態モデルのエージェント
     health_agent = tmp_rn.agent
 
@@ -269,7 +274,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             action_space=action_space,
             device=env.device,
         )
-        agent.load(health_agent_model)  # 初期化は健康状態モデルで行う
+        if checkpoint_pathes is not None:
+            # チェックポイントが指定されている場合はそこから読み込む
+            agent.load(checkpoint_pathes[class_id])
+        else:
+            agent.load(health_agent_model_path)  # 初期化は健康状態モデルで行う
         target_agents.append(agent)
 
     from custom_parallel_trainer import CustomParallelAgentTrainer

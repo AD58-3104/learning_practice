@@ -195,39 +195,6 @@ class H1FlatEnvCfg_PLAY(H1FlatEnvCfg):
         self.events.base_external_force_torque = None
         self.events.push_robot = None
 
-@configclass 
-class H1FlatEnvCfgCorrectLearningData(H1FlatEnvCfg):
-    def __post_init__(self):
-        # post init of parent
-        super().__post_init__()
-        self.episode_length_s = 20.0
-        self.events.change_random_joint_torque = EventTerm(
-            func=mdp.change_random_joint_torque,
-            mode="interval",
-            interval_range_s=(5.0, 10.0),
-            params={
-                "target_joint_cfg": SceneEntityCfg(
-                                name="robot",
-                                joint_names=[
-                                    "right_hip_yaw",
-                                    "left_hip_yaw",
-                                    "right_hip_roll",
-                                    "left_hip_roll",
-                                    "right_hip_pitch",
-                                    "left_hip_pitch",
-                                    "right_knee",
-                                    "left_knee",]),
-                "joint_torque": 50.0,
-                "logging": False
-            },
-        )
-        self.events.change_joint_torque = None # disable the original one
-        self.events.reset_all_joint_torques = EventTerm(
-            func=mdp.reset_all_joint_torques,
-            mode="reset",
-            params={},
-        )
-
 @configclass
 class H1FlatEnvCfgRandomJointDebuff(H1FlatEnvCfg):
     def __post_init__(self):
@@ -243,12 +210,12 @@ class H1FlatEnvCfgRandomJointDebuff(H1FlatEnvCfg):
                 "target_joint_cfg": SceneEntityCfg(
                                 name="robot",
                                 joint_names=[            
-                                    "right_hip_yaw",
-                                    "left_hip_yaw",
-                                    "right_hip_roll",
-                                    "left_hip_roll",
-                                    "right_hip_pitch",
-                                    "left_hip_pitch",
+                                    # "right_hip_yaw",
+                                    # "left_hip_yaw",
+                                    # "right_hip_roll",
+                                    # "left_hip_roll",
+                                    # "right_hip_pitch",
+                                    # "left_hip_pitch",
                                     "right_knee",
                                     "left_knee",]),
                 "joint_torque": 50.0,
@@ -349,3 +316,11 @@ class H1FlatEnvCfgDiscriminator(H1FlatEnvCfg):
         self.rewards.dof_pos_limits = None
         self.rewards.feet_air_time = None
 
+
+@configclass 
+class H1FlatEnvCfgCorrectLearningData(H1FlatEnvCfgRandomJointDebuff_PLAY):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        self.episode_length_s = 10.0
+        self.events.change_random_joint_torque.interval_range_s=(3.0, 7.0)
