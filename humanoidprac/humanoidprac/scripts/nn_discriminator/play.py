@@ -165,6 +165,7 @@ if __name__ == "__main__":
 
                 # モデルの出力: (batch, seq_len, 19)
                 outputs, hidden_states = model(inputs, hidden=hidden_states)
+                outputs = torch.sigmoid(outputs)
                 outputs = (outputs > 0.5).long()
                 targets = targets.long()
 

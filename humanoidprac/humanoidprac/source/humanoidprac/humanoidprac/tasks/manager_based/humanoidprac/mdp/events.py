@@ -84,6 +84,8 @@ def EnvIdClassifier(num_of_envs: int):
             self.num_of_envs = num_of_envs
             # 上界を表すリスト(最後は省略されている)
             self.class_joint_id_list = [
+                # [1,4,8,12],  # class 0 右
+                # [0,3,7,11],  # class 1 左
                 [1],  # class 0 右
                 [4],
                 [8],
@@ -351,6 +353,8 @@ class change_random_joint_torque(ManagerTermBase):
             # クラス4-7: 左脚（joint 0, 3, 7, 11）
             # 右脚と左脚のグループに統合
             right_tensors = [classified_env_ids[i] for i in range(4) if len(classified_env_ids[i]) > 0]
+            # env_ids_right = classified_env_ids[0]
+            # env_ids_left = classified_env_ids[1]
             left_tensors = [classified_env_ids[i] for i in range(4, 8) if len(classified_env_ids[i]) > 0]
             env_ids_right = torch.cat(right_tensors) if len(right_tensors) > 0 else torch.tensor([], dtype=torch.long, device="cuda")
             env_ids_left = torch.cat(left_tensors) if len(left_tensors) > 0 else torch.tensor([], dtype=torch.long, device="cuda")

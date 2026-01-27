@@ -378,6 +378,7 @@ class CustomParallelAgentTrainer(Trainer):
                 # shape (num_envs, 19)
                 states_for_inf = self.data_preprocessor.process_tensor(states)
                 joint_failure, hidden_states = (self.joint_gru_net(states_for_inf.unsqueeze(1), hidden_states))
+                joint_failure = torch.sigmoid(joint_failure)
                 joint_failure = (joint_failure > 0.5).long()  # 故障判定を二値化
                 joint_mask = [2,5,6,9,10,13,14,15,16,17,18]
                 joint_failure[:,:,joint_mask] = 0  # 関係ない関節は0にする
@@ -563,6 +564,7 @@ class CustomParallelAgentTrainer(Trainer):
                 # shape (num_envs, 19)
                 states_for_inf = self.data_preprocessor.process_tensor(states)
                 joint_failure, hidden_states = (self.joint_gru_net(states_for_inf.unsqueeze(1), hidden_states))
+                joint_failure = torch.sigmoid(joint_failure)
                 joint_failure = (joint_failure > 0.5).long()  # 故障判定を二値化
                 joint_mask = [2,5,6,9,10,13,14,15,16,17,18]
                 joint_failure[:,:,joint_mask] = 0  # 関係ない関節は0にする
@@ -679,6 +681,7 @@ class CustomParallelAgentTrainer(Trainer):
                 self.joint_gru_net.eval()
                 states = self.data_preprocessor.process_tensor(states)
                 joint_failure, hidden_states = (self.joint_gru_net(states.unsqueeze(1), hidden=hidden_states))
+                joint_failure = torch.sigmoid(joint_failure)
                 joint_failure = (joint_failure > 0.5).long()  # 故障判定を二値化
 
                 # まず健康状態エージェントで全環境のアクションを計算

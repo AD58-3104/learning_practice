@@ -14,16 +14,68 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 
+class CustomNavigationToolbar(NavigationToolbar):
+    def __init__(self, canvas, parent, default_filename="graph.png"):
+        super().__init__(canvas, parent)
+        self.default_filename = default_filename
+
+    def set_default_filename(self, filename):
+        self.default_filename = filename
+
+    def save_figure(self, *args):
+        filetypes = self.canvas.get_supported_filetypes_grouped()
+        sorted_filetypes = sorted(filetypes.items())
+        default_filetype = self.canvas.get_default_filetype()
+
+        startpath = self.default_filename
+
+        filters = []
+        for name, exts in sorted_filetypes:
+            exts_list = " ".join(['*.%s' % ext for ext in exts])
+            filters.append(f'{name} ({exts_list})')
+        filters = ';;'.join(filters)
+
+        fname, _ = QFileDialog.getSaveFileName(
+            self.canvas.parent(), "Choose a filename to save to",
+            startpath, filters)
+        if fname:
+            try:
+                self.canvas.figure.savefig(fname)
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Error saving file", str(e),
+                    QMessageBox.StandardButton.Ok)
+
 class GraphViewer(QMainWindow):
     def __init__(self):
         super().__init__()
         self.data = None
-        self.data1 = None
-        self.data2 = None
-        self.current_file1 = None
-        self.current_file2 = None
-        self.prefix1 = ""
-        self.prefix2 = "ref_"
+        self.data_files = [None] * 6  # 最大6ファイル
+        self.current_files = [None] * 6
+        self.prefixes = ["", "ref_", "f3_", "f4_", "f5_", "f6_"]
+        self.last_directory = "exp_logdata"
+        self.default_save_filename = "graph.png"  # デフォルトの保存ファイル名
+
+        # 予め指定しておく選択グループ（グループ名: {"columns": [カラム名のリスト], "ylabel": Y軸ラベル}）
+        self.preset_groups = {
+            "Group 1": {
+                "columns": ["left_hip_yaw", "right_hip_yaw",
+                            "right_hip_roll","left_hip_roll",
+                            "left_hip_pitch","right_hip_pitch",
+                            "left_knee","right_knee",
+                            "left_ankle","right_ankle"],
+                "ylabel": "Torque [Nm]"
+            },
+            "Group 2": {
+                "columns": ["lin_vel_xy_yaw", "ang_vel_z_world"],
+                "ylabel": "Value"
+            },
+            "Group 3": {
+                "columns": ["column6", "column7", "column8", "column9"],
+                "ylabel": "Group 3 Values"
+            },
+        }
+
         self.initUI()
 
     def initUI(self):
@@ -37,43 +89,36 @@ class GraphViewer(QMainWindow):
         # Top controls
         controls_layout = QVBoxLayout()
 
-        # File 1 selection
-        file1_layout = QHBoxLayout()
-        self.open_button1 = QPushButton('Open CSV File 1')
-        self.open_button1.clicked.connect(lambda: self.open_file(1))
-        file1_layout.addWidget(self.open_button1)
+        # File selection (最大6ファイル)
+        self.file_buttons = []
+        self.prefix_edits = []
+        self.file_labels = []
 
-        file1_layout.addWidget(QLabel('Prefix:'))
-        self.prefix1_edit = QLineEdit()
-        self.prefix1_edit.setText(self.prefix1)
-        self.prefix1_edit.setMaximumWidth(100)
-        self.prefix1_edit.textChanged.connect(self.on_prefix_changed)
-        file1_layout.addWidget(self.prefix1_edit)
+        for i in range(6):
+            file_layout = QHBoxLayout()
 
-        self.file_label1 = QLabel('No file loaded')
-        file1_layout.addWidget(self.file_label1)
-        file1_layout.addStretch()
+            # Open button
+            open_button = QPushButton(f'Open CSV File {i+1}')
+            open_button.clicked.connect(lambda checked, idx=i: self.open_file(idx))
+            file_layout.addWidget(open_button)
+            self.file_buttons.append(open_button)
 
-        controls_layout.addLayout(file1_layout)
+            # Prefix
+            file_layout.addWidget(QLabel('Prefix:'))
+            prefix_edit = QLineEdit()
+            prefix_edit.setText(self.prefixes[i])
+            prefix_edit.setMaximumWidth(100)
+            prefix_edit.textChanged.connect(lambda text, idx=i: self.on_prefix_changed(idx, text))
+            file_layout.addWidget(prefix_edit)
+            self.prefix_edits.append(prefix_edit)
 
-        # File 2 selection
-        file2_layout = QHBoxLayout()
-        self.open_button2 = QPushButton('Open CSV File 2')
-        self.open_button2.clicked.connect(lambda: self.open_file(2))
-        file2_layout.addWidget(self.open_button2)
+            # File label
+            file_label = QLabel('No file loaded')
+            file_layout.addWidget(file_label)
+            file_layout.addStretch()
+            self.file_labels.append(file_label)
 
-        file2_layout.addWidget(QLabel('Prefix:'))
-        self.prefix2_edit = QLineEdit()
-        self.prefix2_edit.setText(self.prefix2)
-        self.prefix2_edit.setMaximumWidth(100)
-        self.prefix2_edit.textChanged.connect(self.on_prefix_changed)
-        file2_layout.addWidget(self.prefix2_edit)
-
-        self.file_label2 = QLabel('No file loaded')
-        file2_layout.addWidget(self.file_label2)
-        file2_layout.addStretch()
-
-        controls_layout.addLayout(file2_layout)
+            controls_layout.addLayout(file_layout)
 
         # Plot type selection
         plot_type_layout = QHBoxLayout()
@@ -113,6 +158,17 @@ class GraphViewer(QMainWindow):
         self.y_column_list.itemSelectionChanged.connect(self.update_plot)
         column_layout.addWidget(self.y_column_list)
 
+        # Preset selection buttons
+        preset_label = QLabel("Quick Select:")
+        column_layout.addWidget(preset_label)
+
+        preset_buttons_layout = QVBoxLayout()
+        for group_name in self.preset_groups.keys():
+            btn = QPushButton(group_name)
+            btn.clicked.connect(lambda _, name=group_name: self.select_preset_group(name))
+            preset_buttons_layout.addWidget(btn)
+        column_layout.addLayout(preset_buttons_layout)
+
         column_group.setLayout(column_layout)
         selection_layout.addWidget(column_group)
 
@@ -142,6 +198,24 @@ class GraphViewer(QMainWindow):
         sampling_layout.addWidget(QLabel("points"))
         options_layout.addLayout(sampling_layout)
 
+        # Y-axis label controls
+        ylabel_layout = QHBoxLayout()
+        ylabel_layout.addWidget(QLabel("Y-axis label:"))
+        self.ylabel_edit = QLineEdit()
+        self.ylabel_edit.setPlaceholderText("Auto")
+        self.ylabel_edit.textChanged.connect(self.update_plot)
+        ylabel_layout.addWidget(self.ylabel_edit)
+        options_layout.addLayout(ylabel_layout)
+
+        # Save filename controls
+        save_filename_layout = QHBoxLayout()
+        save_filename_layout.addWidget(QLabel("Save filename:"))
+        self.save_filename_edit = QLineEdit()
+        self.save_filename_edit.setText(self.default_save_filename)
+        self.save_filename_edit.textChanged.connect(self.on_save_filename_changed)
+        save_filename_layout.addWidget(self.save_filename_edit)
+        options_layout.addLayout(save_filename_layout)
+
         options_group.setLayout(options_layout)
         selection_layout.addWidget(options_group)
 
@@ -169,7 +243,7 @@ class GraphViewer(QMainWindow):
         right_layout.addWidget(self.canvas)
 
         # Navigation toolbar
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar = CustomNavigationToolbar(self.canvas, self, self.default_save_filename)
         right_layout.addWidget(self.toolbar)
 
         # Add panels to splitter
@@ -179,11 +253,11 @@ class GraphViewer(QMainWindow):
 
         main_layout.addWidget(splitter)
 
-    def open_file(self, file_num):
+    def open_file(self, file_idx):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            f"Open CSV File {file_num}",
-            "exp_logdata",
+            f"Open CSV File {file_idx+1}",
+            self.last_directory,
             "CSV Files (*.csv);;All Files (*.*)"
         )
 
@@ -191,40 +265,58 @@ class GraphViewer(QMainWindow):
             try:
                 data = pd.read_csv(file_path)
                 file_name = Path(file_path).name
+                self.last_directory = str(Path(file_path).parent)
 
-                if file_num == 1:
-                    self.data1 = data
-                    self.current_file1 = file_name
-                    self.file_label1.setText(f"File 1: {file_name}")
-                else:
-                    self.data2 = data
-                    self.current_file2 = file_name
-                    self.file_label2.setText(f"File 2: {file_name}")
+                self.data_files[file_idx] = data
+                self.current_files[file_idx] = file_name
+                self.file_labels[file_idx].setText(f"File {file_idx+1}: {file_name}")
 
                 self.update_combined_data()
 
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load file:\n{str(e)}")
 
-    def on_prefix_changed(self):
-        self.prefix1 = self.prefix1_edit.text()
-        self.prefix2 = self.prefix2_edit.text()
+    def on_prefix_changed(self, idx, text):
+        self.prefixes[idx] = text
         self.update_combined_data()
 
+    def on_save_filename_changed(self):
+        self.default_save_filename = self.save_filename_edit.text()
+        self.toolbar.set_default_filename(self.default_save_filename)
+
+    def select_preset_group(self, group_name):
+        """指定されたプリセットグループの項目を選択"""
+        if group_name not in self.preset_groups:
+            return
+
+        preset = self.preset_groups[group_name]
+        columns_to_select = preset["columns"]
+        ylabel = preset.get("ylabel", "")
+
+        # 全ての選択を解除
+        self.y_column_list.clearSelection()
+
+        # プリセットグループの項目を選択
+        for i in range(self.y_column_list.count()):
+            item = self.y_column_list.item(i)
+            if item.text() in columns_to_select:
+                item.setSelected(True)
+
+        # Y軸ラベルを設定
+        self.ylabel_edit.setText(ylabel)
+
     def update_combined_data(self):
-        # Combine data from both files if they exist
-        if self.data1 is not None or self.data2 is not None:
+        # Combine data from all loaded files
+        has_data = any(data is not None for data in self.data_files)
+
+        if has_data:
             combined_data = pd.DataFrame()
 
-            # Add data from file 1 with prefix
-            if self.data1 is not None:
-                for col in self.data1.columns:
-                    combined_data[self.prefix1 + col] = self.data1[col]
-
-            # Add data from file 2 with prefix
-            if self.data2 is not None:
-                for col in self.data2.columns:
-                    combined_data[self.prefix2 + col] = self.data2[col]
+            # Add data from each file with its prefix
+            for i, data in enumerate(self.data_files):
+                if data is not None:
+                    for col in data.columns:
+                        combined_data[self.prefixes[i] + col] = data[col]
 
             self.data = combined_data
 
@@ -272,7 +364,7 @@ class GraphViewer(QMainWindow):
         # Prepare x data
         if x_column == "Index":
             x_data = np.arange(len(self.data))
-            x_label = "Index"
+            x_label = "Step"
         else:
             x_data = np.asarray(self.data[x_column].values)
             x_label = x_column
@@ -315,29 +407,22 @@ class GraphViewer(QMainWindow):
 
         # Set labels and title
         ax.set_xlabel(x_label)
-        if len(y_columns) == 1:
+
+        # Set Y-axis label (custom or auto)
+        custom_ylabel = self.ylabel_edit.text().strip()
+        if custom_ylabel:
+            ax.set_ylabel(custom_ylabel)
+        elif len(y_columns) == 1:
             ax.set_ylabel(y_columns[0])
         else:
             ax.set_ylabel("Value")
 
-        # Create title showing loaded files
-        title_parts = []
-        if self.current_file1:
-            title_parts.append(f"File1: {self.current_file1}")
-        if self.current_file2:
-            title_parts.append(f"File2: {self.current_file2}")
-
-        if title_parts:
-            title = " | ".join(title_parts)
-        else:
-            title = "Data"
-        ax.set_title(f"{title} - {', '.join(y_columns)}")
 
         # Apply options
         if self.grid_checkbox.isChecked():
             ax.grid(True, alpha=0.3)
 
-        if self.legend_checkbox.isChecked() and len(y_columns) > 1:
+        if self.legend_checkbox.isChecked():
             ax.legend()
 
         self.figure.tight_layout()

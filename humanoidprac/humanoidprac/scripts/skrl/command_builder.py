@@ -36,7 +36,7 @@ class CommandBuilderApp(QWidget):
         # 1. ディレクトリパス入力
         left_panel_layout.addWidget(QLabel('📂 相対パス (Relative Path):'))
         self.dir_path_edit = QLineEdit()
-        self.dir_path_edit.setText('./logs/skrl/h1_flat/joint_experiment_ver3')
+        self.dir_path_edit.setText('./logs/skrl/h1_flat/joint_experiment_for_thesis')
         self.dir_path_edit.textChanged.connect(self.update_directory_list)
         left_panel_layout.addWidget(self.dir_path_edit)
 

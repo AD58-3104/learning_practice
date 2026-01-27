@@ -29,7 +29,8 @@ def check_failures(datasets):
         label_sum = label.sum(dim=0)
         joint_failure_counts += label_sum
     print("----------<check_failures>----------")
-    print(f"Episode Label Sum: {joint_failure_counts}")
+    for joint_id in range(setting.WHOLE_JOINT_NUM):
+        print(f"Joint {joint_id} failure count: {joint_failure_counts[joint_id].item()}")
 
 def check_std(datasets):
     mu = torch.zeros(setting.OBS_DIMENSION)
@@ -68,7 +69,7 @@ if __name__ == "__main__":
                 sequence_length=setting.SEQUENCE_LENGTH,
                 cache_in_memory=True
                 )
-    dataloader = torch.utils.nn_data.DataLoader(
+    dataloader = torch.utils.data.DataLoader(
                         datasets,
                         batch_size=1,
                         shuffle=True,
