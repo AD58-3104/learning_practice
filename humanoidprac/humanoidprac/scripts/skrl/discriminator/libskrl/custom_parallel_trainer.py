@@ -259,14 +259,14 @@ class CustomParallelAgentTrainer(Trainer):
         
         # JointGRUNetモデルの読み込み
         # このモデルは出力を outputs > 0.6で二値化する必要があるので注意
-        self.joint_gru_net = JointGRUNet(
-                                input_size=nn_setting.OBS_DIMENSION, 
-                                hidden_size=nn_setting.HIDDEN_SIZE, 
-                                output_size=self.joint_num,
-                                num_layers=nn_setting.NUM_LAYERS,
-                                ).to("cuda")
-        self.joint_gru_net.load_state_dict(torch.load("joint_net_model.pth"))
-        self.joint_gru_net.eval()
+        # self.joint_gru_net = JointGRUNet(
+        #                         input_size=nn_setting.OBS_DIMENSION, 
+        #                         hidden_size=nn_setting.HIDDEN_SIZE, 
+        #                         output_size=self.joint_num,
+        #                         num_layers=nn_setting.NUM_LAYERS,
+        #                         ).to("cuda")
+        # self.joint_gru_net.load_state_dict(torch.load("joint_net_model.pth"))
+        # self.joint_gru_net.eval()
 
         self.classifier = EnvIdClassifier(self.num_envs)
 
@@ -734,6 +734,54 @@ class CustomParallelAgentTrainer(Trainer):
                 policy_states = next_policy_states
             # self.state_history_queue.append_reseted(reseted_tensor)
             self.failure_history_queue.set_reseted(reseted_tensor)
+
+    def correct_data(self, obs_logger, joint_torque_logger) -> None:
+        # set running mode
+        if self.num_simultaneous_agents > 1:
+            self.health_agent.set_running_mode("eval")
+            for agent in self.agents:
+                agent.set_running_mode("eval")
+        else:
+            self.agents.set_running_mode("eval")
+
+        # reset env
+        policy_states, infos = self.env.reset()
+        states = self.env.unwrapped.obs_buf['state'].clone()  # 観測はobs_bufから'state'を取り出してそれを使うようにする
+
+        for timestep in tqdm.tqdm(
+            range(self.initial_timestep, self.timesteps), disable=self.disable_progressbar, file=sys.stdout
+        ):
+
+            with torch.no_grad():
+
+                # まず健康状態エージェントで全環境のアクションを計算
+                health_actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+
+                # step the environments
+                next_policy_states, rewards, terminated, truncated, infos = self.env.step(health_actions)
+                next_states = self.env.unwrapped.obs_buf['state'].clone()  # 観測はobs_bufから'state'を取り出してそれを使うようにする
+                if obs_logger is not None:
+                    obs_logger.log(self.env.common_step_counter, states, terminated, truncated)
+                if joint_torque_logger is not None:
+                    joint_torque_logger.log(self.env, terminated, truncated)
+                
+                # render scene
+                if not self.headless:
+                    self.env.render()
+
+            # reset environments
+            reseted_tensor = terminated | truncated
+            if reseted_tensor.any():
+                with torch.no_grad():
+                    policy_states, infos = self.env.reset()
+                    states = self.env.unwrapped.obs_buf['state'].clone() # 観測はobs_bufから'state'を取り出してそれを使うようにする
+
+            else:
+                states = next_states
+                policy_states = next_policy_states
+        print("[INFO] Data correction completed.")
+        obs_logger.close()
+        joint_torque_logger.close()
 
     def save(self, dir_path: str) -> None:
         """
