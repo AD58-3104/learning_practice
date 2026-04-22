@@ -517,6 +517,269 @@ class CustomParallelAgentTrainer(Trainer):
         print("[INFO] Training completed.")
         self.save(self.model_save_dir)
 
+    def train_with_delayed_failure_info(self) -> None:
+        """Train the agents using the delayed fault notifier for model switching.
+
+        GRU判別器の推論結果ではなく、change_random_joint_torque_with_delayed_notification
+        が env._fault_notifier に登録した通知済み故障関節IDを直接用いてエージェントを切り替える。
+        """
+
+        # set running mode
+        if self.num_simultaneous_agents > 1:
+            for agent in self.agents:
+                agent.set_running_mode("train")
+        else:
+            self.agents.set_running_mode("train")
+
+        # non-simultaneous agents
+        if self.num_simultaneous_agents == 1:
+            # single-agent
+            if self.env.num_agents == 1:
+                self.single_agent_train()
+            # multi-agent
+            else:
+                self.multi_agent_train()
+            return
+
+        # reset env
+        policy_states, infos = self.env.reset()
+
+        # change_random_joint_torque_with_delayed_notification が env に登録した notifier を取得
+        fault_notifier = self.env.unwrapped._fault_notifier
+
+        # 各クラスに属する joint_id の集合を事前計算 (num_envs,) 比較用
+        class_joint_id_tensors = [
+            torch.tensor(self.classifier.class_joint_id_list[cid], dtype=torch.long, device=self.device)
+            for cid in range(self.classifier.num_of_classes)
+        ]
+        class_masks = [
+            self.classifier.get_class_mask(cid) for cid in range(self.classifier.num_of_classes)
+        ]
+
+        for timestep in tqdm.tqdm(
+            range(self.initial_timestep, self.timesteps), disable=self.disable_progressbar, file=sys.stdout
+        ):
+
+            with torch.no_grad():
+                # 遅延カウンタを進め、通知済み故障関節IDを取得する
+                # shape (num_envs,), 未通知は-1
+                fault_notifier.step()
+                notified_faults = fault_notifier.get_notified_faults()
+
+                # クラスごとに故障マスクテンソルを取得（id,tensor）
+                # 通知済みの関節がそのクラスの担当関節に属し、かつ環境がそのクラスの範囲に属する場合にTrue
+                class_failure_mask_tensors: list[tuple[int, torch.Tensor]] = []
+                for class_id in range(self.classifier.num_of_classes):
+                    joint_match = (notified_faults.unsqueeze(-1) == class_joint_id_tensors[class_id]).any(dim=-1)
+                    class_failure_mask = class_masks[class_id] & joint_match
+                    class_failure_mask_tensors.append((class_id, class_failure_mask))
+
+                # まず健康状態エージェントで全環境のアクションを計算
+                health_actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+
+                # 各クラスエージェントのアクションを計算（全環境分）
+                class_actions_list = [None for _ in range(self.classifier.num_of_classes)]
+                for class_id in range(self.classifier.num_of_classes):
+                    if class_failure_mask_tensors[class_id][1].any():
+                        agent = self.agents[class_id]
+                        class_actions_list[class_id] = agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+                    else:
+                        class_actions_list[class_id] = None
+
+                # 最終的なアクションを決定（故障通知を受けた環境は対応クラスのエージェント、それ以外は健康状態）
+                actions = health_actions.clone()
+                for class_id, class_failure_mask in class_failure_mask_tensors:
+                    if class_failure_mask.any():
+                        actions[class_failure_mask] = class_actions_list[class_id][class_failure_mask]
+
+                # step the environments
+                next_policy_states, rewards, terminated, truncated, infos = self.env.step(actions)
+
+                # render scene
+                if not self.headless:
+                    self.env.render()
+
+                # 各エージェントで遷移を記録（全環境分だが、故障していない環境の報酬は0）
+                agents_with_transitions = []
+                for class_id, class_failure_mask in class_failure_mask_tensors:
+                    if class_failure_mask.any():
+                        masked_rewards = torch.zeros_like(rewards)
+                        masked_rewards[class_failure_mask] = rewards[class_failure_mask]
+
+                        classified_states = self.classifier.mask_other_classes(class_id, policy_states)
+                        classified_actions = self.classifier.mask_other_classes(class_id, class_actions_list[class_id])
+                        classified_rewards = self.classifier.mask_other_classes(class_id, masked_rewards)
+                        classified_next_states = self.classifier.mask_other_classes(class_id, next_policy_states)
+                        classified_terminated = self.classifier.mask_other_classes(class_id, terminated)
+                        classified_truncated = self.classifier.mask_other_classes(class_id, truncated)
+
+                        self.agents[class_id].record_transition(
+                            states=classified_states,
+                            actions=classified_actions,
+                            rewards=classified_rewards,
+                            next_states=classified_next_states,
+                            terminated=classified_terminated,
+                            truncated=classified_truncated,
+                            infos=infos,
+                            timestep=timestep,
+                            timesteps=self.timesteps,
+                        )
+                        agents_with_transitions.append(class_id)
+
+                # log environment info (各エージェント固有の報酬をログ)
+                for class_id, class_failure_mask in class_failure_mask_tensors:
+                    if class_failure_mask.any():
+                        agent_mean_reward = rewards[class_failure_mask].mean().item()
+                        self.agents[class_id].track_data("Debug / mean_reward", agent_mean_reward)
+                        self.agents[class_id].track_data("Debug / num_failure_envs", class_failure_mask.sum().item())
+
+                # 共通の環境情報もログ（オプション）
+                if self.environment_info in infos:
+                    for k, v in infos[self.environment_info].items():
+                        if isinstance(v, torch.Tensor) and v.numel() == 1:
+                            for agent in self.agents:
+                                agent.track_data(f"Info / {k}", v.item())
+
+            # post-interaction (record_transitionを呼び出したエージェントのみ)
+            for class_id in agents_with_transitions:
+                agent = self.agents[class_id]
+                agent.post_interaction(timestep=timestep, timesteps=self.timesteps)
+
+            # reset environments
+            # fault_notifier のリセットは sample_fault_notification_delay (mode="reset") が自動で行う
+            reseted_tensor = terminated | truncated
+            if reseted_tensor.any():
+                with torch.no_grad():
+                    policy_states, infos = self.env.reset()
+            else:
+                policy_states = next_policy_states
+
+            # モデルの定期保存
+            if (timestep + 1) % self.model_save_interval == 0:
+                self.save(self.model_save_dir)
+
+        print("[INFO] Training completed.")
+        self.save(self.model_save_dir)
+
+    def eval_with_delayed_failure_info(self, expdata_logger: None, success_rate_logger: None, discriminator_tester: None) -> None:
+        """Evaluate the agents using the delayed fault notifier for model switching.
+
+        GRU判別器の推論結果ではなく、change_random_joint_torque_with_delayed_notification
+        が env._fault_notifier に登録した通知済み故障関節IDを直接用いてエージェントを切り替える。
+        """
+
+        # set running mode
+        if self.num_simultaneous_agents > 1:
+            self.health_agent.set_running_mode("eval")
+            for agent in self.agents:
+                agent.set_running_mode("eval")
+        else:
+            self.agents.set_running_mode("eval")
+
+        # non-simultaneous agents
+        if self.num_simultaneous_agents == 1:
+            # single-agent
+            if self.env.num_agents == 1:
+                self.single_agent_eval()
+            # multi-agent
+            else:
+                self.multi_agent_eval()
+            return
+
+        # reset env
+        policy_states, infos = self.env.reset()
+
+        # change_random_joint_torque_with_delayed_notification が env に登録した notifier を取得
+        fault_notifier = self.env.unwrapped._fault_notifier
+
+        # 各クラスに属する joint_id の集合を事前計算 (num_envs,) 比較用
+        class_joint_id_tensors = [
+            torch.tensor(self.classifier.class_joint_id_list[cid], dtype=torch.long, device=self.device)
+            for cid in range(self.classifier.num_of_classes)
+        ]
+        class_masks = [
+            self.classifier.get_class_mask(cid) for cid in range(self.classifier.num_of_classes)
+        ]
+
+        for timestep in tqdm.tqdm(
+            range(self.initial_timestep, self.timesteps), disable=self.disable_progressbar, file=sys.stdout
+        ):
+
+            with torch.no_grad():
+                # 遅延カウンタを進め、通知済み故障関節IDを取得する
+                # shape (num_envs,), 未通知は-1
+                fault_notifier.step()
+                notified_faults = fault_notifier.get_notified_faults()
+
+                # クラスごとに故障マスクテンソルを取得（id,tensor）
+                # 通知済みの関節がそのクラスの担当関節に属し、かつ環境がそのクラスの範囲に属する場合にTrue
+                class_failure_mask_tensors: list[tuple[int, torch.Tensor]] = []
+                for class_id in range(self.classifier.num_of_classes):
+                    joint_match = (notified_faults.unsqueeze(-1) == class_joint_id_tensors[class_id]).any(dim=-1)
+                    class_failure_mask = class_masks[class_id] & joint_match
+                    class_failure_mask_tensors.append((class_id, class_failure_mask))
+
+                # まず健康状態エージェントで全環境のアクションを計算
+                health_actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+
+                # 各クラスエージェントのアクションを計算（全環境分）
+                class_actions_list = [None for _ in range(self.classifier.num_of_classes)]
+                for class_id in range(self.classifier.num_of_classes):
+                    if class_failure_mask_tensors[class_id][1].any():
+                        agent = self.agents[class_id]
+                        class_actions_list[class_id] = agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+                    else:
+                        class_actions_list[class_id] = None
+
+                # 最終的なアクションを決定（故障通知を受けた環境は対応クラスのエージェント、それ以外は健康状態）
+                actions = health_actions.clone()
+                for class_id, class_failure_mask in class_failure_mask_tensors:
+                    if class_failure_mask.any():
+                        actions[class_failure_mask] = class_actions_list[class_id][class_failure_mask]
+
+                # step the environments
+                next_policy_states, rewards, terminated, truncated, infos = self.env.step(actions)
+
+                # 判別器相当の故障関節マスクを構築（通知済み関節のみTrue）
+                # shape (num_envs, joint_num)
+                failure_joints_list = torch.zeros(
+                    (self.num_envs, self.joint_num), dtype=torch.bool, device=self.device
+                )
+                notified_mask = notified_faults >= 0
+                if notified_mask.any():
+                    env_idx = torch.nonzero(notified_mask).squeeze(-1)
+                    failure_joints_list[env_idx, notified_faults[notified_mask]] = True
+
+                # ロギング
+                if success_rate_logger is not None:
+                    success_rate_logger.log(terminated, truncated)
+                if discriminator_tester is not None:
+                    discriminator_tester.log(self.env, failure_joints_list)
+                if expdata_logger is not None:
+                    if expdata_logger.log(self.env):
+                        # これがTrueを返したら終了
+                        break
+
+                # render scene
+                if not self.headless:
+                    self.env.render()
+
+            # reset environments
+            # fault_notifier のリセットは sample_fault_notification_delay (mode="reset") が自動で行う
+            reseted_tensor = terminated | truncated
+            if reseted_tensor.any():
+                with torch.no_grad():
+                    policy_states, infos = self.env.reset()
+            else:
+                policy_states = next_policy_states
+
+        # 記録
+        if success_rate_logger is not None:
+            success_rate_logger.write_result()
+        if discriminator_tester is not None:
+            discriminator_tester.write_result()
+        print("[INFO] Evaluation completed.")
+
     def eval(self, expdata_logger: None, success_rate_logger: None, discriminator_tester: None) -> None:
         """Evaluate the agents sequentially
 

@@ -291,7 +291,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     )
 
     try:
-        trainer.train()
+        trainer.train_with_delayed_failure_info()
     except KeyboardInterrupt:
         # sigintでもモデルを保存したいのでキャッチ
         print("\n[INFO] Training interrupted by user.")

@@ -202,24 +202,55 @@ class H1FlatEnvCfgRandomJointDebuff(H1FlatEnvCfg):
         super().__post_init__()
         self.episode_length_s = 20.0
 
-        self.events.change_random_joint_torque = EventTerm(
-            func=mdp.change_random_joint_torque,
+        # self.events.change_random_joint_torque = EventTerm(
+        #     func=mdp.change_random_joint_torque,
+        #     mode="interval",
+        #     interval_range_s=(3.0, 8.0),
+        #     params={
+        #         "target_joint_cfg": SceneEntityCfg(
+        #                         name="robot",
+        #                         joint_names=[            
+        #                             # "right_hip_yaw",
+        #                             # "left_hip_yaw",
+        #                             # "right_hip_roll",
+        #                             # "left_hip_roll",
+        #                             # "right_hip_pitch",
+        #                             # "left_hip_pitch",
+        #                             "right_knee",
+        #                             "left_knee",]),
+        #         "joint_torque": 50.0,
+        #     },
+        # )
+        # 遅延付きの故障と通知イベントの設定
+        self.events.change_random_joint_torque_with_delayed_notification = EventTerm(
+            func=mdp.change_random_joint_torque_with_delayed_notification,
             mode="interval",
             interval_range_s=(3.0, 8.0),
             params={
+                "joint_torque": 50.0,
                 "target_joint_cfg": SceneEntityCfg(
                                 name="robot",
                                 joint_names=[            
-                                    # "right_hip_yaw",
-                                    # "left_hip_yaw",
-                                    # "right_hip_roll",
-                                    # "left_hip_roll",
-                                    # "right_hip_pitch",
-                                    # "left_hip_pitch",
+                                    "right_hip_yaw",
+                                    "left_hip_yaw",
+                                    "right_hip_roll",
+                                    "left_hip_roll",
+                                    "right_hip_pitch",
+                                    "left_hip_pitch",
                                     "right_knee",
                                     "left_knee",]),
-                "joint_torque": 50.0,
-            },
+                "delay_range": (5, 12),
+            }
+        )
+        # 遅延のサンプリング
+        self.events.sample_fault_notification_delay = EventTerm(
+            func=mdp.sample_fault_notification_delay,
+            mode="reset",
+        )
+        # 故障バッファのリセット
+        self.events.reset_fault_buffer = EventTerm(
+            func=mdp.reset_fault_buffer,
+            mode="reset",
         )
         self.events.change_joint_torque = None # disable the original one
         self.events.reset_all_joint_torques = EventTerm(
@@ -236,11 +267,12 @@ class H1FlatEnvCfgRandomJointDebuff_PLAY(H1FlatEnvCfg_PLAY):
         super().__post_init__()
         self.episode_length_s = 20.0
 
-        self.events.change_random_joint_torque = EventTerm(
-            func=mdp.change_random_joint_torque,
+        self.events.change_random_joint_torque_with_delayed_notification = EventTerm(
+            func=mdp.change_random_joint_torque_with_delayed_notification,
             mode="interval",
             interval_range_s=(3.0, 8.0),
             params={
+                "joint_torque": 50.0,
                 "target_joint_cfg": SceneEntityCfg(
                                         name="robot",
                                         joint_names=[
@@ -252,9 +284,16 @@ class H1FlatEnvCfgRandomJointDebuff_PLAY(H1FlatEnvCfg_PLAY):
                                             "left_hip_pitch",
                                             "right_knee",
                                             "left_knee",]),
-                "joint_torque": 50.0,
-                # "normal_size": 1,  # 正常な状態も含める
+                "delay_range": (5, 12),
             },
+        )
+        self.events.sample_fault_notification_delay = EventTerm(
+            func=mdp.sample_fault_notification_delay,
+            mode="reset",
+        )
+        self.events.reset_fault_buffer = EventTerm(
+            func=mdp.reset_fault_buffer,
+            mode="reset",
         )
         self.events.change_joint_torque = None # disable the original one
         self.events.reset_all_joint_torques = EventTerm(
@@ -323,4 +362,4 @@ class H1FlatEnvCfgCorrectLearningData(H1FlatEnvCfgRandomJointDebuff_PLAY):
         # post init of parent
         super().__post_init__()
         self.episode_length_s = 10.0
-        self.events.change_random_joint_torque.interval_range_s=(3.0, 7.0)
+        self.events.change_random_joint_torque_with_delayed_notification.interval_range_s=(3.0, 7.0)

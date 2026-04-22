@@ -53,6 +53,7 @@ parser.add_argument(
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--finish_step",type=int,default=3000,help="終了ステップ数")
 parser.add_argument("--joint_cfg",type=str,default="",help="上書きするjointの設定を辞書形式で指定する. 例: '{\"left_knee_joint\": 150}'")
+parser.add_argument("--use_delayed_failure_info", action="store_true", default=False, help="GRU判別器ではなく遅延通知された故障関節IDでエージェントを切り替える")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments - split between argparse and hydra args
@@ -292,6 +293,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 discriminator_tester=discriminator_tester, 
                 obs_logger=obs_logger,
                 joint_torque_logger=joint_torque_logger
+            )
+        except KeyboardInterrupt:
+            print("\n[INFO] Evaluation interrupted by user.")
+    elif  args_cli.log_nn_data:
+        print("[INFO] Running data correction during evaluation.")
+        try:
+            trainer.correct_data(
+                obs_logger=obs_logger,
+                joint_torque_logger=joint_torque_logger
+            )
+        except KeyboardInterrupt:
+            print("\n[INFO] Evaluation interrupted by user.")
+    elif args_cli.use_delayed_failure_info:
+        print("[INFO] Running evaluation with delayed failure info.")
+        try:
+            trainer.eval_with_delayed_failure_info(
+                expdata_logger=exp_val_logger,
+                success_rate_logger=success_rate_logger,
+                discriminator_tester=discriminator_tester,
             )
         except KeyboardInterrupt:
             print("\n[INFO] Evaluation interrupted by user.")
