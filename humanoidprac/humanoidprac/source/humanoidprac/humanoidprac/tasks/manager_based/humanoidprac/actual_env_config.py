@@ -356,7 +356,19 @@ class H1FlatEnvCfgDiscriminator(H1FlatEnvCfg):
         self.rewards.feet_air_time = None
 
 
-@configclass 
+@configclass
+class H1FlatEnvCfgOneJointDebuff(H1FlatEnvCfgRandomJointDebuff):
+    target_joint_name: str = "right_hip_yaw"
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.change_random_joint_torque_with_delayed_notification.params["target_joint_cfg"] = SceneEntityCfg(
+            name="robot",
+            joint_names=[self.target_joint_name],
+        )
+
+
+@configclass
 class H1FlatEnvCfgCorrectLearningData(H1FlatEnvCfgRandomJointDebuff_PLAY):
     def __post_init__(self):
         # post init of parent

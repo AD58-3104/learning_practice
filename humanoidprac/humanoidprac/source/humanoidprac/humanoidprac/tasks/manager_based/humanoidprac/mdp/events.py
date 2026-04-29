@@ -683,35 +683,39 @@ class change_random_joint_torque_with_delayed_notification(ManagerTermBase):
         not_reseted_limits_env_indices = torch.nonzero(~reseted_limits, as_tuple=False).squeeze(-1)
 
         if env.num_envs > 1:
-            classified_env_ids = self.classifier.classify_by_envid(not_reseted_limits_env_indices)
-            right_tensors = [classified_env_ids[i] for i in range(4) if len(classified_env_ids[i]) > 0]
-            left_tensors = [classified_env_ids[i] for i in range(4, 8) if len(classified_env_ids[i]) > 0]
-            env_ids_right = torch.cat(right_tensors) if len(right_tensors) > 0 else torch.tensor([], dtype=torch.long, device="cuda")
-            env_ids_left = torch.cat(left_tensors) if len(left_tensors) > 0 else torch.tensor([], dtype=torch.long, device="cuda")
+            # クラスベースの env 分割は廃止。各健康環境について独立にジョイントを一様抽選する。
+            # これにより 1 イベントで 1 ジョイントが片側全環境に同時適用される旧挙動を回避し、
+            # 1000 step 程度の play でも関節分布が概ね均一になる。
+            target_joint_ids = list(target_joint_cfg.joint_ids)
+            if len(target_joint_ids) == 0 or len(not_reseted_limits_env_indices) == 0:
+                return
 
-            # 右側をランダム選出
-            target_joint_right = [joint_id for joint_id in target_joint_cfg.joint_ids if joint_id in self.right_legs.joint_ids]
-            random_joint_right = random.choice(target_joint_right + [999 for _ in range(normal_size)])
-            if random_joint_right != 999:
-                joint_torque_torch = torch.tensor(self.joint_torque_right[random_joint_right], device="cuda")
-                if len(env_ids_right) > 0:
-                    self.asset.write_joint_effort_limit_to_sim(joint_torque_torch, [random_joint_right], env_ids_right)
-                    # 故障バッファに書き込み
-                    self.current_fault_buffer[env_ids_right] = random_joint_right
-                    # 遅延通知用に登録
-                    self.fault_notifier.register_fault(env_ids_right, random_joint_right)
+            n_healthy = len(not_reseted_limits_env_indices)
+            choices = target_joint_ids + [999 for _ in range(normal_size)]
+            choices_t = torch.tensor(choices, dtype=torch.long, device="cuda")
+            sampled_idx = torch.randint(0, len(choices), (n_healthy,), device="cuda")
+            sampled = choices_t[sampled_idx]  # shape (n_healthy,)
 
-            # 左側をランダム選出
-            target_joint_left = [joint_id for joint_id in target_joint_cfg.joint_ids if joint_id in self.left_legs.joint_ids]
-            random_joint_left = random.choice(target_joint_left + [999 for _ in range(normal_size)])
-            if random_joint_left != 999:
-                joint_torque_torch = torch.tensor(self.joint_torque_left[random_joint_left], device="cuda")
-                if len(env_ids_left) > 0:
-                    self.asset.write_joint_effort_limit_to_sim(joint_torque_torch, [random_joint_left], env_ids_left)
-                    # 故障バッファに書き込み
-                    self.current_fault_buffer[env_ids_left] = random_joint_left
-                    # 遅延通知用に登録
-                    self.fault_notifier.register_fault(env_ids_left, random_joint_left)
+            # 関節IDごとにまとめて書き込み
+            unique_joint_ids = torch.unique(sampled).tolist()
+            for joint_id in unique_joint_ids:
+                if joint_id == 999:
+                    continue
+                mask = (sampled == joint_id)
+                env_ids_for_joint = not_reseted_limits_env_indices[mask]
+                if len(env_ids_for_joint) == 0:
+                    continue
+                if joint_id in self.joint_torque_right:
+                    torque_val = self.joint_torque_right[joint_id]
+                elif joint_id in self.joint_torque_left:
+                    torque_val = self.joint_torque_left[joint_id]
+                else:
+                    print(f"[change_random_joint_torque_with_delayed_notification] WARN: joint_id {joint_id} not in torque tables; skipped")
+                    continue
+                joint_torque_torch = torch.tensor(torque_val, device="cuda")
+                self.asset.write_joint_effort_limit_to_sim(joint_torque_torch, [int(joint_id)], env_ids_for_joint)
+                self.current_fault_buffer[env_ids_for_joint] = int(joint_id)
+                self.fault_notifier.register_fault(env_ids_for_joint, int(joint_id))
         else:
             # 単一環境の場合
             target_joint_ids = target_joint_cfg.joint_ids
@@ -729,18 +733,15 @@ class change_random_joint_torque_with_delayed_notification(ManagerTermBase):
                 self.fault_notifier.register_fault(env_ids, single_random_joint)
 
         if logging:
-            for idx in env_ids_left.tolist():
+            # 旧クラス分割ベースのログは廃止。logging=True の場合は単純に env 毎の故障 ID を1ファイルにまとめる。
+            current_after = self.fault_notifier.current_fault_joint
+            for idx in range(env.num_envs):
                 if self.log_files[idx] is None:
                     self.log_files[idx] = open(f"./nn_data/joint_torque_event_log_env_{idx}.dat", "w")
                     self.log_files[idx].write("common_step_counter,target_joint_id\n")
-                if random_joint_left != 999:
-                    self.log_files[idx].write(f"{env.common_step_counter},{random_joint_left}\n")
-            for idx in env_ids_right.tolist():
-                if self.log_files[idx] is None:
-                    self.log_files[idx] = open(f"./nn_data/joint_torque_event_log_env_{idx}.dat", "w")
-                    self.log_files[idx].write("common_step_counter,target_joint_id\n")
-                if random_joint_right != 999:
-                    self.log_files[idx].write(f"{env.common_step_counter},{random_joint_right}\n")
+                jid = int(current_after[idx].item())
+                if jid >= 0:
+                    self.log_files[idx].write(f"{env.common_step_counter},{jid}\n")
 
     def get_fault_buffer(self) -> torch.Tensor:
         """各環境の現在の故障関節IDを取得する"""

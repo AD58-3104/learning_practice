@@ -74,6 +74,135 @@ class AgentModelLoader:
         """
         return self.agents
 
+
+class JointAgentLoader:
+    """関節名ごとに分かれた `agent_<joint_name>.pt` を 1 フォルダから読み込み、
+    関節名キーの dict として保持するローダ。
+
+    train_one.py + train_one_joint.sh で生成される 8 関節分のモデルを推論時に使う。
+    """
+
+    EXPECTED_JOINT_NAMES: List[str] = [
+        "right_hip_yaw", "left_hip_yaw",
+        "right_hip_roll", "left_hip_roll",
+        "right_hip_pitch", "left_hip_pitch",
+        "right_knee", "left_knee",
+    ]
+
+    def __init__(
+        self,
+        env,
+        agent_cfg: dict,
+        models_dir: str,
+        file_prefix: str = "agent_",
+        file_suffix: str = ".pt",
+    ) -> None:
+        self.env = env
+        self.agent_cfg = agent_cfg
+        self.models_dir = models_dir
+        self.file_prefix = file_prefix
+        self.file_suffix = file_suffix
+        self.agents_by_joint_name: dict = {}
+        self._load_all()
+
+    def _scan_files(self) -> dict:
+        import re
+        pattern = re.compile(rf"^{re.escape(self.file_prefix)}(?P<name>.+){re.escape(self.file_suffix)}$")
+        result: dict = {}
+        for fname in os.listdir(self.models_dir):
+            m = pattern.match(fname)
+            if m is None:
+                continue
+            joint_name = m.group("name")
+            result[joint_name] = os.path.join(self.models_dir, fname)
+        return result
+
+    def _load_all(self) -> None:
+        found = self._scan_files()
+        missing = [jn for jn in self.EXPECTED_JOINT_NAMES if jn not in found]
+        if missing:
+            raise FileNotFoundError(
+                f"[JointAgentLoader] missing agents for joints: {missing} (in {self.models_dir})"
+            )
+        extra = [jn for jn in found.keys() if jn not in self.EXPECTED_JOINT_NAMES]
+        if extra:
+            print(f"[JointAgentLoader] WARN: ignoring unexpected files for: {extra}")
+
+        for joint_name in self.EXPECTED_JOINT_NAMES:
+            agent = self._build_ppo_agent(joint_name)
+            agent.load(found[joint_name])
+            agent.set_running_mode("eval")
+            self.agents_by_joint_name[joint_name] = agent
+        print(
+            f"[JointAgentLoader] loaded {len(self.agents_by_joint_name)}/"
+            f"{len(self.EXPECTED_JOINT_NAMES)} joint agents from {self.models_dir}"
+        )
+
+    def _build_ppo_agent(self, joint_name: str) -> Agent:
+        """train_one.py:198-247 と同じ構造で PPO エージェントを構築する。"""
+        from skrl.utils.model_instantiators.torch import shared_model
+        from gymnasium.spaces import Box
+        from skrl.agents.torch.ppo import PPO
+        from skrl.resources.schedulers.torch import KLAdaptiveRL
+        from skrl.memories.torch import RandomMemory
+        from numpy import float32
+
+        agent_cfg = copy.deepcopy(self.agent_cfg)
+        agent_cfg["agent"]["experiment"]["experiment_name"] += f"_play_{joint_name}"
+        agent_cfg["agent"]["learning_rate_scheduler"] = KLAdaptiveRL
+
+        memory_size = agent_cfg["memory"]["memory_size"]
+        if memory_size < 0:
+            memory_size = agent_cfg["agent"]["rollouts"]
+        memory = RandomMemory(
+            memory_size=memory_size,
+            num_envs=self.env.num_envs,
+            device=self.env.device,
+        )
+
+        action_space = Box(
+            low=-500.0, high=500.0,
+            shape=self.env.action_space.shape, dtype=float32,
+        )
+
+        roles = ["policy", "value"]
+        structure = [
+            agent_cfg["models"]["policy"]["class"],
+            agent_cfg["models"]["value"]["class"],
+        ]
+        parameters = [
+            agent_cfg["models"]["policy"],
+            agent_cfg["models"]["value"],
+        ]
+        instance_shared_models = shared_model(
+            observation_space=self.env.observation_space,
+            action_space=action_space,
+            device=self.env.device,
+            structure=structure,
+            roles=roles,
+            parameters=parameters,
+        )
+        models = {
+            "policy": instance_shared_models,
+            "value": instance_shared_models,
+        }
+        models["policy"].init_state_dict("policy")
+        models["value"].init_state_dict("value")
+
+        agent = PPO(
+            models=models,
+            memory=memory,
+            cfg=agent_cfg["agent"],
+            observation_space=self.env.observation_space,
+            action_space=action_space,
+            device=self.env.device,
+        )
+        return agent
+
+    def get_agents_by_joint_name(self) -> dict:
+        return self.agents_by_joint_name
+
+
 class StateHistoryQueue:
     def __init__(self, max_length: int, num_envs: int, device: str = "cuda"):
         self.max_length = max_length
@@ -219,6 +348,7 @@ class CustomParallelAgentTrainer(Trainer):
         agents: Union[Agent, List[Agent]],
         agents_scope: Optional[List[int]] = None,
         cfg: Optional[dict] = None,
+        single_policy_save_name: Optional[str] = None,
     ) -> None:
         """Parallel agent trainer
 
@@ -270,8 +400,11 @@ class CustomParallelAgentTrainer(Trainer):
 
         self.classifier = EnvIdClassifier(self.num_envs)
 
-        if len(self.agents) != self.classifier.num_of_classes:
-            raise ValueError(f"Number of agents ({len(self.agents)}) does not match number of classes in EnvIdClassifier ({self.classifier.num_of_classes})")
+        # 単一エージェント (skrlにより agents=[single_agent] が単一インスタンスへアンラップされた場合) は
+        # train_with_delayed_failure_info_single_policy 専用なのでクラス数との一致チェックをスキップする
+        if isinstance(self.agents, list):
+            if len(self.agents) != self.classifier.num_of_classes:
+                raise ValueError(f"Number of agents ({len(self.agents)}) does not match number of classes in EnvIdClassifier ({self.classifier.num_of_classes})")
 
         # init agents
         if self.num_simultaneous_agents > 1:
@@ -286,6 +419,8 @@ class CustomParallelAgentTrainer(Trainer):
         current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_ppo")
         self.model_save_dir = os.path.join(self.cfg["trained_model_save_path"],current_time)
         self.model_save_interval = 3000 # timesteps毎に保存
+        # 単一ポリシー版の保存ファイル名 (例: target_joint の関節名を入れる)
+        self.single_policy_save_name = single_policy_save_name
 
     def train(self) -> None:
         """Train the agents sequentially
@@ -661,6 +796,124 @@ class CustomParallelAgentTrainer(Trainer):
         print("[INFO] Training completed.")
         self.save(self.model_save_dir)
 
+    def train_with_delayed_failure_info_single_policy(self) -> None:
+        """train_with_delayed_failure_info の単一ポリシー版
+
+        故障クラスごとにエージェントを切り替えるのではなく、self.agents[0] のみを
+        単一ポリシーとして全ての故障環境で利用する。
+        通知済み故障関節IDが存在する環境ではこの単一ポリシーが動作し、
+        それ以外の環境では健康状態エージェントが動作する。
+        遷移の記録・post_interaction も self.agents[0] にのみ行う。
+        """
+
+        # skrl が agents=[single_agent] を単一インスタンスにアンラップした場合と、
+        # 複数エージェントが渡されている場合の両方に対応
+        single_agent = self.agents if not isinstance(self.agents, list) else self.agents[0]
+
+        # set running mode
+        single_agent.set_running_mode("train")
+
+        # reset env
+        policy_states, infos = self.env.reset()
+
+        # change_random_joint_torque_with_delayed_notification が env に登録した notifier を取得
+        fault_notifier = self.env.unwrapped._fault_notifier
+
+        for timestep in tqdm.tqdm(
+            range(self.initial_timestep, self.timesteps), disable=self.disable_progressbar, file=sys.stdout
+        ):
+
+            with torch.no_grad():
+                # 遅延カウンタを進め、通知済み故障関節IDを取得する
+                # shape (num_envs,), 未通知は-1
+                fault_notifier.step()
+                notified_faults = fault_notifier.get_notified_faults()
+
+                # 通知済み(故障判定済み)環境のマスク shape (num_envs,)
+                failure_mask = notified_faults >= 0
+
+                # まず健康状態エージェントで全環境のアクションを計算
+                health_actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+
+                # 故障環境がある場合は単一ポリシーのアクションも計算
+                if failure_mask.any():
+                    single_actions = single_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+                else:
+                    single_actions = None
+
+                # 最終的なアクションを決定（故障通知を受けた環境は単一ポリシー、それ以外は健康状態）
+                actions = health_actions.clone()
+                if failure_mask.any():
+                    actions[failure_mask] = single_actions[failure_mask]
+
+                # step the environments
+                next_policy_states, rewards, terminated, truncated, infos = self.env.step(actions)
+
+                # render scene
+                if not self.headless:
+                    self.env.render()
+
+                # 遷移を記録（故障環境のみ非ゼロ）
+                recorded = False
+                if failure_mask.any():
+                    # 故障していない環境を0でマスクしたテンソルを作成
+                    masked_states = torch.zeros_like(policy_states)
+                    masked_states[failure_mask] = policy_states[failure_mask]
+                    masked_actions = torch.zeros_like(single_actions)
+                    masked_actions[failure_mask] = single_actions[failure_mask]
+                    masked_rewards = torch.zeros_like(rewards)
+                    masked_rewards[failure_mask] = rewards[failure_mask]
+                    masked_next_states = torch.zeros_like(next_policy_states)
+                    masked_next_states[failure_mask] = next_policy_states[failure_mask]
+                    masked_terminated = torch.zeros_like(terminated)
+                    masked_terminated[failure_mask] = terminated[failure_mask]
+                    masked_truncated = torch.zeros_like(truncated)
+                    masked_truncated[failure_mask] = truncated[failure_mask]
+
+                    single_agent.record_transition(
+                        states=masked_states,
+                        actions=masked_actions,
+                        rewards=masked_rewards,
+                        next_states=masked_next_states,
+                        terminated=masked_terminated,
+                        truncated=masked_truncated,
+                        infos=infos,
+                        timestep=timestep,
+                        timesteps=self.timesteps,
+                    )
+                    recorded = True
+
+                    # ログ
+                    agent_mean_reward = rewards[failure_mask].mean().item()
+                    single_agent.track_data("Debug / mean_reward", agent_mean_reward)
+                    single_agent.track_data("Debug / num_failure_envs", failure_mask.sum().item())
+
+                # 共通の環境情報もログ（オプション）
+                if self.environment_info in infos:
+                    for k, v in infos[self.environment_info].items():
+                        if isinstance(v, torch.Tensor) and v.numel() == 1:
+                            single_agent.track_data(f"Info / {k}", v.item())
+
+            # post-interaction (record_transitionを呼び出した場合のみ)
+            if recorded:
+                single_agent.post_interaction(timestep=timestep, timesteps=self.timesteps)
+
+            # reset environments
+            # fault_notifier のリセットは sample_fault_notification_delay (mode="reset") が自動で行う
+            reseted_tensor = terminated | truncated
+            if reseted_tensor.any():
+                with torch.no_grad():
+                    policy_states, infos = self.env.reset()
+            else:
+                policy_states = next_policy_states
+
+            # モデルの定期保存
+            if (timestep + 1) % self.model_save_interval == 0:
+                self.save(self.model_save_dir)
+
+        print("[INFO] Training completed.")
+        self.save(self.model_save_dir)
+
     def eval_with_delayed_failure_info(self, expdata_logger: None, success_rate_logger: None, discriminator_tester: None) -> None:
         """Evaluate the agents using the delayed fault notifier for model switching.
 
@@ -779,6 +1032,109 @@ class CustomParallelAgentTrainer(Trainer):
         if discriminator_tester is not None:
             discriminator_tester.write_result()
         print("[INFO] Evaluation completed.")
+
+    def eval_with_delayed_failure_info_by_joint_name(
+        self,
+        agents_by_joint_name: dict,
+        expdata_logger=None,
+        joint_survival_logger=None,
+    ) -> None:
+        """関節名キーの dict として渡されたエージェントを、遅延通知された故障関節IDで切り替える eval。
+
+        EnvIdClassifier を一切参照せず、`fault_notifier.get_notified_faults()` の値を
+        joint_id とみなして対応エージェントの行動を発行する。未通知環境は health_agent。
+        """
+
+        # joint_name -> joint_id を解決
+        joint_names_tuple = self.env.unwrapped.scene["robot"].data.joint_names
+
+        agents_by_id: dict = {}
+        for joint_name, agent in agents_by_joint_name.items():
+            try:
+                jid = list(joint_names_tuple).index(joint_name)
+            except ValueError:
+                print(f"[eval_by_joint_name] WARN: joint_name '{joint_name}' is not in robot joint list. skipped.")
+                continue
+            agents_by_id[jid] = agent
+
+        # set running mode
+        self.health_agent.set_running_mode("eval")
+        for agent in agents_by_joint_name.values():
+            agent.set_running_mode("eval")
+
+        # reset env
+        policy_states, infos = self.env.reset()
+
+        # change_random_joint_torque_with_delayed_notification が env に登録した notifier を取得
+        fault_notifier = self.env.unwrapped._fault_notifier
+
+        for timestep in tqdm.tqdm(
+            range(self.initial_timestep, self.timesteps), disable=self.disable_progressbar, file=sys.stdout
+        ):
+            with torch.no_grad():
+                # 通知済み故障関節IDを取得 shape (num_envs,), 未通知は-1
+                fault_notifier.step()
+                notified_faults = fault_notifier.get_notified_faults()
+
+                # 健康状態エージェントで全環境のアクションを計算
+                health_actions = self.health_agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+                actions = health_actions.clone()
+
+                # joint_id 単位でアクションを上書き
+                for joint_id, agent in agents_by_id.items():
+                    mask = (notified_faults == joint_id)
+                    if mask.any():
+                        joint_actions = agent.act(policy_states, timestep=timestep, timesteps=self.timesteps)[0]
+                        actions[mask] = joint_actions[mask]
+
+                # step the environments
+                next_policy_states, rewards, terminated, truncated, infos = self.env.step(actions)
+
+                # render scene
+                if not self.headless:
+                    self.env.render()
+
+                # ロギング
+                if joint_survival_logger is not None:
+                    joint_survival_logger.log(self.env, terminated, truncated)
+                if expdata_logger is not None:
+                    if expdata_logger.log(self.env):
+                        # 終了条件
+                        break
+
+            # reset environments
+            reseted_tensor = terminated | truncated
+            if reseted_tensor.any():
+                with torch.no_grad():
+                    policy_states, infos = self.env.reset()
+            else:
+                policy_states = next_policy_states
+
+        # 結果書き出し
+        if joint_survival_logger is not None:
+            joint_survival_logger.write_result()
+        print("[INFO] Evaluation completed.")
+
+    def eval_single_policy_for_joint(
+        self,
+        agent,
+        joint_name: str,
+        expdata_logger=None,
+        joint_survival_logger=None,
+    ) -> None:
+        """単一ポリシーを 1 つの故障関節に対してテストする eval メソッド。
+
+        env_cfg.events.change_random_joint_torque_with_delayed_notification.params.target_joint_cfg.joint_names
+        が事前に `[joint_name]` のみへ絞られている前提。これにより故障イベントは常に joint_name のみを発火する。
+        故障通知された env では `agent` のアクションが、それ以外では health_agent のアクションが採用される。
+
+        実装は eval_with_delayed_failure_info_by_joint_name の単一エントリ dict 版として薄くラップする。
+        """
+        return self.eval_with_delayed_failure_info_by_joint_name(
+            agents_by_joint_name={joint_name: agent},
+            expdata_logger=expdata_logger,
+            joint_survival_logger=joint_survival_logger,
+        )
 
     def eval(self, expdata_logger: None, success_rate_logger: None, discriminator_tester: None) -> None:
         """Evaluate the agents sequentially
@@ -1053,8 +1409,15 @@ class CustomParallelAgentTrainer(Trainer):
         :param dir_path: モデルを保存するディレクトリパス
         :type dir_path: str
         """
-        # 各エージェントのやつを全部保存する
         import os
         os.makedirs(dir_path, exist_ok=True)
-        for joint_id, agent in enumerate(self.agents):
-            agent.save(os.path.join(dir_path, f"agent_joint_{joint_id}.pt"))
+        if isinstance(self.agents, list):
+            # 複数エージェント: 各クラスのモデルをそれぞれ保存
+            for joint_id, agent in enumerate(self.agents):
+                agent.save(os.path.join(dir_path, f"agent_joint_{joint_id}.pt"))
+        else:
+            # 単一エージェント (single policy版): self.single_policy_save_name があればそれを使う
+            filename = self.single_policy_save_name or "agent_single.pt"
+            if not filename.endswith(".pt"):
+                filename += ".pt"
+            self.agents.save(os.path.join(dir_path, filename))

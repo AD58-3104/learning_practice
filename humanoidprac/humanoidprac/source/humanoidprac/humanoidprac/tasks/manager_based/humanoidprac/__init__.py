@@ -64,6 +64,17 @@ gym.register(
         "skrl_cfg_entry_point": f"{agents.__name__}:learned_agent_cfg.yaml",
     },
 )
+# 1関節のみに故障を入れる版
+gym.register(
+    id="Parallel-failure-train-v0-one-joint",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.actual_env_config:H1FlatEnvCfgOneJointDebuff",
+        "skrl_cfg_entry_point": f"{agents.__name__}:learned_agent_cfg.yaml",
+    },
+)
+
 # 👆のタスクのplay用
 gym.register(
     id="Parallel-failure-train-v0-play",

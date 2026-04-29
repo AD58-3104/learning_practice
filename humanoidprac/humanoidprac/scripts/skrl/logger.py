@@ -212,6 +212,99 @@ class ClassSuccessRateLogger:
                 f.write(f"{class_idx}, {self.total_epicode_count[class_idx]}, {self.total_failure[class_idx]}, {success_rate:.2f}\n")
         print("[Class Success Rate Logger] Result written to class_success_rate.log")
 
+class JointSurvivalRateLogger:
+    """関節ごとの生存率をエピソード単位で集計するファイルベースロガー。
+
+    集計ソースは `env.unwrapped._fault_notifier.get_current_faults()` (実際にトルク制限が
+    掛かった関節 ID。通知前から立つ)。エピソード中に最初に観測された故障 ID を記録し、
+    エピソード終了時 (terminated | truncated) に該当 joint_name のカテゴリへカウントする。
+    terminated は失敗、truncated は生存とみなす。
+    """
+
+    NO_FAULT_KEY = "no_fault"
+    OTHER_JOINTS_KEY = "other_joints"
+
+    def __init__(self, env, joint_names: list, log_dir: str = "."):
+        self.env = env
+        self.log_dir = log_dir
+        self.joint_names = list(joint_names)
+
+        # joint_name <-> joint_id の対応を robot から作成
+        all_joint_names = list(env.unwrapped.scene["robot"].data.joint_names)
+        self.joint_id_to_name = {}
+        for jn in self.joint_names:
+            try:
+                self.joint_id_to_name[all_joint_names.index(jn)] = jn
+            except ValueError:
+                print(f"[JointSurvivalRateLogger] WARN: joint '{jn}' not in robot joints; ignored.")
+
+        # 各エピソードで最初に観測された故障 joint_id (-1 = 未故障)
+        self.num_envs = env.num_envs
+        self.episode_fault_joint_id = torch.full(
+            (self.num_envs,), -1, dtype=torch.long, device=env.device
+        )
+
+        # 集計バケット
+        self.total_episodes: dict[str, int] = {jn: 0 for jn in self.joint_names}
+        self.fail_episodes: dict[str, int] = {jn: 0 for jn in self.joint_names}
+        self.total_episodes[self.NO_FAULT_KEY] = 0
+        self.fail_episodes[self.NO_FAULT_KEY] = 0
+        self.total_episodes[self.OTHER_JOINTS_KEY] = 0
+        self.fail_episodes[self.OTHER_JOINTS_KEY] = 0
+
+    def log(self, env, terminated: torch.Tensor, truncated: torch.Tensor):
+        # 入力テンソルを (num_envs,) の bool に正規化する
+        terminated = terminated.reshape(-1).bool()
+        truncated = truncated.reshape(-1).bool()
+
+        # 現在の故障関節ID
+        current = env.unwrapped._fault_notifier.get_current_faults().reshape(-1)
+
+        # エピソード中に最初に観測された故障を記録
+        update_mask = (self.episode_fault_joint_id == -1) & (current >= 0)
+        if update_mask.any():
+            self.episode_fault_joint_id[update_mask] = current[update_mask]
+
+        done_mask = terminated | truncated
+        if not done_mask.any():
+            return
+
+        # done な env を集計
+        done_indices = torch.nonzero(done_mask, as_tuple=False).reshape(-1).tolist()
+        terminated_cpu = terminated.detach().cpu()
+        for idx in done_indices:
+            fault_jid = int(self.episode_fault_joint_id[idx].item())
+            failed = bool(terminated_cpu[idx].item())
+            if fault_jid < 0:
+                key = self.NO_FAULT_KEY
+            elif fault_jid in self.joint_id_to_name:
+                key = self.joint_id_to_name[fault_jid]
+            else:
+                key = self.OTHER_JOINTS_KEY
+            self.total_episodes[key] += 1
+            if failed:
+                self.fail_episodes[key] += 1
+
+        # 次エピソード用にリセット
+        self.episode_fault_joint_id[done_mask] = -1
+
+    def write_result(self):
+        import os
+        out_path = os.path.join(self.log_dir, "joint_survival_rate.log")
+        os.makedirs(self.log_dir, exist_ok=True)
+        ordered_keys = list(self.joint_names) + [self.NO_FAULT_KEY, self.OTHER_JOINTS_KEY]
+        with open(out_path, "w") as f:
+            f.write("joint_name,total_episodes,fail_episodes,survival_episodes,survival_rate[%]\n")
+            for key in ordered_keys:
+                total = self.total_episodes[key]
+                fail = self.fail_episodes[key]
+                survive = total - fail
+                rate = (100.0 * survive / total) if total > 0 else 0.0
+                f.write(f"{key},{total},{fail},{survive},{rate:.2f}\n")
+                print(f"[JointSurvivalRateLogger] {key}: total={total}, fail={fail}, survive={survive}, survival_rate={rate:.2f}%")
+        print(f"[JointSurvivalRateLogger] Result written to {out_path}")
+
+
 # NNの判別器を訓練するために利用する観測を保存するクラス
 class DiscriminatorObsDataLogger:
     def __init__(self, env: ManagerBasedRLEnv):
